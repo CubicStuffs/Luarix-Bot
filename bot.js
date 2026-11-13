@@ -25,6 +25,20 @@ app.listen(process.env.PORT || 3000, () => console.log('Web server running.'));
 const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_KEY);
 const client = new Client({ intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMembers] });
 
+// Helper function to calculate expiry (Supports 'forever')
+function calculateExpiry(daysInput) {
+    if (daysInput.toLowerCase() === 'forever') return null;
+    const days = parseInt(daysInput);
+    if (isNaN(days) || days < 1) return undefined; // Invalid
+    return new Date(Date.now() + days * 86400000).toISOString();
+}
+
+// Helper function to format expiry
+function formatExpiry(expiresAt) {
+    if (!expiresAt) return 'Forever';
+    return new Date(expiresAt).toLocaleDateString();
+}
+
 const commands = [
     new SlashCommandBuilder()
         .setName('link')
@@ -34,20 +48,27 @@ const commands = [
     new SlashCommandBuilder()
         .setName('createkey')
         .setDescription('Generate a new script key')
-        .addIntegerOption(opt => opt.setName('days').setDescription('Days until expiry').setRequired(true)),
+        .addStringOption(opt => opt.setName('days').setDescription('Days until expiry (e.g. 30) or type "forever"').setRequired(true)),
     new SlashCommandBuilder()
         .setName('setpanel')
         .setDescription('Create a key redemption panel for a project')
         .addStringOption(opt => opt.setName('project').setDescription('Select your project').setRequired(true).setAutocomplete(true))
         .addRoleOption(opt => opt.setName('manager_role').setDescription('Role that manages keys').setRequired(true))
         .addRoleOption(opt => opt.setName('buyer_role').setDescription('Role given when redeemed').setRequired(true)),
-    // UPDATED: Removed channel option
     new SlashCommandBuilder()
         .setName('whitelist')
         .setDescription('Whitelist a user to use a project without a key')
         .addUserOption(opt => opt.setName('user').setDescription('The user to whitelist').setRequired(true))
         .addStringOption(opt => opt.setName('project').setDescription('Select your project').setRequired(true).setAutocomplete(true))
-        .addIntegerOption(opt => opt.setName('days').setDescription('Days until expiry').setRequired(true))
+        .addStringOption(opt => opt.setName('days').setDescription('Days until expiry or "forever"').setRequired(true)),
+    // NEW: /blacklist COMMAND
+    new SlashCommandBuilder()
+        .setName('blacklist')
+        .setDescription('Blacklist a user from a project')
+        .addUserOption(opt => opt.setName('user').setDescription('The user to blacklist').setRequired(true))
+        .addStringOption(opt => opt.setName('project').setDescription('Select your project').setRequired(true).setAutocomplete(true))
+        .addStringOption(opt => opt.setName('reason').setDescription('Reason for the blacklist').setRequired(true))
+        .addStringOption(opt => opt.setName('days').setDescription('Days until expiry or "forever"').setRequired(true))
 ].map(cmd => cmd.toJSON());
 
 client.once('ready', async () => {
@@ -63,14 +84,14 @@ client.on('interactionCreate', async interaction => {
     
     // --- AUTOCOMPLETE ---
     if (interaction.isAutocomplete()) {
-        if (interaction.commandName === 'setpanel' || interaction.commandName === 'whitelist') {
+        if (['setpanel', 'whitelist', 'blacklist'].includes(interaction.commandName)) {
             const focusedValue = interaction.options.getFocused();
             const { data: user } = await supabase.from('users').select('api_key').eq('discord_id', interaction.user.id).limit(1);
             
             if (!user || user.length === 0) return interaction.respond([{ name: "❌ Please use /link first", value: "none" }]);
 
             const { data: scripts } = await supabase.from('scripts').select('id, name').eq('api_key', user[0].api_key);
-            if (!scripts || scripts.length === 0) return interaction.respond([{ name: "❌ No projects found on website", value: "none" }]);
+            if (!scripts || scripts.length === 0) return interaction.respond([{ name: "❌ No projects found", value: "none" }]);
 
             const filtered = scripts
                 .filter(choice => choice.name.toLowerCase().includes(focusedValue.toLowerCase()))
@@ -88,7 +109,6 @@ client.on('interactionCreate', async interaction => {
             const apiKey = interaction.options.getString('api_key');
             const role = interaction.options.getRole('manager_role');
             const roleId = role ? role.id : null;
-
             const { data: users } = await supabase.from('users').select('*').eq('api_key', apiKey).limit(1);
             
             if (users && users.length > 0) {
@@ -101,7 +121,10 @@ client.on('interactionCreate', async interaction => {
         }
 
         if (interaction.commandName === 'createkey') {
-            const days = interaction.options.getInteger('days');
+            const days = interaction.options.getString('days');
+            const expiresAt = calculateExpiry(days);
+            if (expiresAt === undefined) return interaction.reply({ content: "❌ Invalid days. Use a number or 'forever'.", ephemeral: true });
+
             const { data: users } = await supabase.from('users').select('api_key').eq('discord_id', interaction.user.id).limit(1);
             if (!users || users.length === 0) return interaction.reply({ content: "You need to `/link` your API key first!", ephemeral: true });
 
@@ -119,8 +142,7 @@ client.on('interactionCreate', async interaction => {
         if (interaction.commandName === 'setpanel') {
             const scriptId = interaction.options.getString('project');
             const buyerRole = interaction.options.getRole('buyer_role');
-            
-            if (scriptId === "none") return interaction.reply({ content: "Please select a valid project from the dropdown.", ephemeral: true });
+            if (scriptId === "none") return interaction.reply({ content: "Please select a valid project.", ephemeral: true });
 
             await supabase.from('scripts').update({ buyer_role_id: buyerRole.id }).eq('id', scriptId);
             const { data: script } = await supabase.from('scripts').select('name').eq('id', scriptId).single();
@@ -143,45 +165,59 @@ client.on('interactionCreate', async interaction => {
             interaction.reply({ content: "✅ Panel successfully created!", ephemeral: true });
         }
 
-        // UPDATED /WHITELIST COMMAND
         if (interaction.commandName === 'whitelist') {
             const targetUser = interaction.options.getUser('user');
             const scriptId = interaction.options.getString('project');
-            const days = interaction.options.getInteger('days');
+            const days = interaction.options.getString('days');
+            const expiresAt = calculateExpiry(days);
+            
+            if (scriptId === "none" || expiresAt === undefined) return interaction.reply({ content: "❌ Invalid project or days.", ephemeral: true });
 
-            if (scriptId === "none") return interaction.reply({ content: "❌ Invalid project selected. Please choose from the dropdown.", ephemeral: true });
-
-            const { data: scriptExists } = await supabase.from('scripts').select('id').eq('id', scriptId).maybeSingle();
-            if (!scriptExists) return interaction.reply({ content: "❌ Error: Project ID not found. Try refreshing Discord.", ephemeral: true });
-
-            const expiresAt = new Date(Date.now() + days * 86400000).toISOString();
             const { error } = await supabase.from('whitelists').insert({ 
-                discord_id: targetUser.id, 
-                script_id: scriptId, 
-                expires_at: expiresAt 
+                discord_id: targetUser.id, script_id: scriptId, expires_at: expiresAt 
             });
-
             if (error) return interaction.reply({ content: `Database error: ${error.message}`, ephemeral: true });
 
-            // NEW: Send a clean text message, auto-detecting the current channel
             await interaction.channel.send(`<@${targetUser.id}> **You have been whitelisted!**\nYou can access the script via this message --> <#${interaction.channel.id}>`);
-            
             interaction.reply({ content: "✅ User whitelisted successfully.", ephemeral: true });
+        }
+
+        // NEW: /BLACKLIST COMMAND
+        if (interaction.commandName === 'blacklist') {
+            const targetUser = interaction.options.getUser('user');
+            const scriptId = interaction.options.getString('project');
+            const reason = interaction.options.getString('reason');
+            const days = interaction.options.getString('days');
+            const expiresAt = calculateExpiry(days);
+            
+            if (scriptId === "none" || expiresAt === undefined) return interaction.reply({ content: "❌ Invalid project or days.", ephemeral: true });
+
+            const { error } = await supabase.from('blacklists').insert({ 
+                discord_id: targetUser.id, 
+                script_id: scriptId, 
+                reason: reason,
+                expires_at: expiresAt 
+            });
+            if (error) return interaction.reply({ content: `Database error: ${error.message}`, ephemeral: true });
+
+            // Public message exactly like Image 1
+            await interaction.channel.send(`<@${targetUser.id}> **You have been blacklisted!** ⛔\nTo find out why, go to <#${interaction.channel.id}> and click on **Stats** button`);
+            interaction.reply({ content: "✅ User blacklisted successfully.", ephemeral: true });
         }
     }
 
     // --- DROPDOWN MENU (Create Key) ---
     if (interaction.isStringSelectMenu() && interaction.customId.startsWith('createkey_select_')) {
-        const days = parseInt(interaction.customId.replace('createkey_select_', ''));
+        const days = interaction.customId.replace('createkey_select_', '');
+        const expiresAt = calculateExpiry(days);
         const scriptId = interaction.values[0];
 
         const key = "LXR-KEY-" + crypto.randomBytes(4).toString('hex').toUpperCase();
-        const expiresAt = new Date(Date.now() + days * 86400000).toISOString();
-
+        
         await supabase.from('script_keys').insert({ key, script_id: scriptId, expires_at: expiresAt });
 
         const embed = new EmbedBuilder().setTitle('🔑 Key Generated').setColor(0xf5c518)
-            .addFields({ name: 'Key', value: `\`${key}\`` }, { name: 'Expires In', value: `${days} days` });
+            .addFields({ name: 'Key', value: `\`${key}\`` }, { name: 'Expires In', value: expiresAt ? `${days} days` : 'Forever' });
         interaction.update({ content: null, embeds: [embed], components: [] });
     }
 
@@ -192,6 +228,7 @@ client.on('interactionCreate', async interaction => {
             const action = parts[1];
             const scriptId = parts[2];
 
+            // 1. REDEEM KEY
             if (action === 'redeem') {
                 const modal = new ModalBuilder().setCustomId(`modal_redeem_${scriptId}`).setTitle('Redeem a key');
                 const keyInput = new TextInputBuilder().setCustomId('key_input').setLabel("Enter script key below:").setPlaceholder('LXR-KEY-...').setStyle(TextInputStyle.Short).setRequired(true);
@@ -199,7 +236,19 @@ client.on('interactionCreate', async interaction => {
                 return interaction.showModal(modal);
             }
 
-            // CHECK IF THEY HAVE A KEY OR ARE WHITELISTED
+            // CHECK FOR BLACKLIST
+            const { data: blacklists } = await supabase.from('blacklists').select('*').eq('discord_id', interaction.user.id).eq('script_id', scriptId);
+            const activeBlacklist = blacklists?.find(b => !b.expires_at || new Date(b.expires_at) > new Date());
+
+            if (activeBlacklist) {
+                const banMsg = `You are blacklisted from this project with the reason:\n\`\`\`\n${activeBlacklist.reason}\n\`\`\`\n⚠️ This ban will expire **${formatExpiry(activeBlacklist.expires_at)}**`;
+                
+                if (action === 'script') return interaction.reply({ embeds: [new EmbedBuilder().setTitle('Unable to send script').setColor(0xef4444).setDescription(banMsg)] });
+                if (action === 'role') return interaction.reply({ embeds: [new EmbedBuilder().setTitle('Unable to give role').setColor(0xef4444).setDescription(banMsg)] });
+                if (action === 'reset') return interaction.reply({ embeds: [new EmbedBuilder().setTitle('Unable to reset HWID!').setColor(0xef4444).setDescription(`User is temporarily blacklisted, try again later.`)] });
+            }
+
+            // CHECK FOR KEY/WHITELIST
             const { data: userKeys } = await supabase.from('script_keys').select('*').eq('script_id', scriptId).eq('discord_id', interaction.user.id).limit(1);
             const userKey = userKeys && userKeys.length > 0 ? userKeys[0] : null;
 
@@ -217,7 +266,6 @@ client.on('interactionCreate', async interaction => {
                 }
                 
                 let finalKey = userKey ? userKey.key : null;
-
                 if (!finalKey && isWhitelisted) {
                     finalKey = "LXR-VIP-" + crypto.randomBytes(4).toString('hex').toUpperCase();
                     await supabase.from('script_keys').insert({ key: finalKey, script_id: scriptId, discord_id: interaction.user.id, expires_at: null });
@@ -264,6 +312,8 @@ client.on('interactionCreate', async interaction => {
                     if (vipKey && vipKey.length > 0) statsKey = vipKey[0];
                 }
 
+                const isBanned = activeBlacklist ? `Yes ❌ (Reason: ${activeBlacklist.reason})` : 'No ✅';
+
                 const embed = new EmbedBuilder()
                     .setTitle('Stats')
                     .setColor(0x2b2d31)
@@ -273,9 +323,8 @@ client.on('interactionCreate', async interaction => {
 **Key:** ||${statsKey?.key || 'None'}|| 🔒
 **Total HWID Resets:** \`${statsKey?.resets || 0}\` ⚙️
 **Last Reset:** ${statsKey?.last_reset ? new Date(statsKey.last_reset).toLocaleDateString() : 'Never'} 📅
-**Expires At:** ${statsKey?.expires_at ? new Date(statsKey.expires_at).toLocaleDateString() : 'Never'} 📅
-**Banned:** ${statsKey?.banned ? 'Yes ❌' : 'No ✅'}
-**Note:** ${statsKey?.note || 'Not specified'}
+**Expires At:** ${formatExpiry(statsKey?.expires_at)} 📅
+**Blacklisted:** ${isBanned}
                     `)
                     .setFooter({ text: `Today at ${new Date().toLocaleTimeString()}` });
 
@@ -294,8 +343,10 @@ client.on('interactionCreate', async interaction => {
             if (!keyData || keyData.length === 0) return interaction.reply({ content: "❌ Invalid key for this project.", ephemeral: true });
 
             const key = keyData[0];
+            
+            // STRICT CHECK: Is it already redeemed by someone else?
             if (key.discord_id && key.discord_id !== interaction.user.id) {
-                return interaction.reply({ content: "❌ This key has already been redeemed by someone else.", ephemeral: true });
+                return interaction.reply({ content: "❌ This key has already been redeemed by another Discord account.", ephemeral: true });
             }
 
             await supabase.from('script_keys').update({ discord_id: interaction.user.id }).eq('key', inputKey);
