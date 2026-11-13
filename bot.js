@@ -100,12 +100,15 @@ client.on('interactionCreate', async interaction => {
 
         // --- /PROJECTS COMMAND ---
         if (interaction.commandName === 'projects') {
+            // FIXED: Changed .single() to .maybeSingle()
             const { data: user, error } = await supabase.from('users').select('api_key').eq('discord_id', interaction.user.id).maybeSingle();
             
             if (error) return interaction.reply({ content: `Database Error: ${error.message}`, ephemeral: true });
             if (!user) return interaction.reply({ content: "You need to `/link` your API key first!", ephemeral: true });
 
-            const { data: scripts } = await supabase.from('scripts').select('id, name, keyless').eq('api_key', user.api_key);
+            const { data: scripts, error: scriptErr } = await supabase.from('scripts').select('id, name, keyless').eq('api_key', user.api_key);
+            
+            if (scriptErr) return interaction.reply({ content: `Database Error: ${scriptErr.message}`, ephemeral: true });
             if (!scripts || scripts.length === 0) return interaction.reply({ content: "You don't have any projects yet.", ephemeral: true });
 
             const embed = new EmbedBuilder()
@@ -120,6 +123,7 @@ client.on('interactionCreate', async interaction => {
         if (interaction.commandName === 'createkey') {
             const days = interaction.options.getInteger('days');
 
+            // FIXED: Changed .single() to .maybeSingle()
             const { data: user, error: userErr } = await supabase.from('users').select('api_key').eq('discord_id', interaction.user.id).maybeSingle();
             if (userErr) return interaction.reply({ content: `Database Error: ${userErr.message}`, ephemeral: true });
             if (!user) return interaction.reply({ content: "You need to `/link` your API key first!", ephemeral: true });
@@ -173,13 +177,13 @@ client.on('interactionCreate', async interaction => {
             const { error } = await supabase.from('script_keys').insert({ key, script_id: scriptId, expires_at: expiresAt });
             if (error) return interaction.update({ content: "Database error: " + error.message, components: [] });
 
-            const { data: scriptData } = await supabase.from('scripts').select('name').eq('id', scriptId).single();
+            const { data: scriptData } = await supabase.from('scripts').select('name').eq('id', scriptId).maybeSingle();
 
             const embed = new EmbedBuilder()
                 .setTitle('🔑 Key Generated')
                 .setColor(0xf5c518)
                 .addFields(
-                    { name: 'Project', value: scriptData.name, inline: true },
+                    { name: 'Project', value: scriptData?.name || 'Unknown', inline: true },
                     { name: 'Key', value: `\`${key}\``, inline: true },
                     { name: 'Expires In', value: `${days} days`, inline: false }
                 );
