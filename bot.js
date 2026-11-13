@@ -9,7 +9,10 @@ const {
     ActionRowBuilder, 
     StringSelectMenuBuilder,
     ButtonBuilder,
-    ButtonStyle
+    ButtonStyle,
+    ModalBuilder,
+    TextInputBuilder,
+    TextInputStyle
 } = require('discord.js');
 const { createClient } = require('@supabase/supabase-js');
 const crypto = require('crypto');
@@ -29,20 +32,11 @@ const commands = [
     new SlashCommandBuilder()
         .setName('link')
         .setDescription('Link your Luarix API Key to your Discord account')
-        .addStringOption(opt => opt.setName('api_key').setDescription('Your LXR-... API Key').setRequired(true))
-        .addRoleOption(opt => opt.setName('manager_role').setDescription('The role allowed to generate keys').setRequired(false)),
-    new SlashCommandBuilder()
-        .setName('projects')
-        .setDescription('View your Luarix projects'),
+        .addStringOption(opt => opt.setName('api_key').setDescription('Your LXR-... API Key').setRequired(true)),
     new SlashCommandBuilder()
         .setName('createkey')
         .setDescription('Generate a new script key')
         .addIntegerOption(opt => opt.setName('days').setDescription('Days until expiry').setRequired(true)),
-    new SlashCommandBuilder()
-        .setName('resethwid')
-        .setDescription('Reset the HWID of a key')
-        .addStringOption(opt => opt.setName('key').setDescription('The script key').setRequired(true)),
-    // NEW: /setpanel command with Autocomplete
     new SlashCommandBuilder()
         .setName('setpanel')
         .setDescription('Create a key redemption panel for a project')
@@ -50,18 +44,10 @@ const commands = [
             opt.setName('project')
                 .setDescription('Select your project')
                 .setRequired(true)
-                .setAutocomplete(true) // Enables dynamic dropdown
+                .setAutocomplete(true)
         )
-        .addRoleOption(opt => 
-            opt.setName('manager_role')
-                .setDescription('The role that manages this project')
-                .setRequired(true)
-        )
-        .addRoleOption(opt => 
-            opt.setName('buyer_role')
-                .setDescription('The role given to buyers after redeeming')
-                .setRequired(true)
-        )
+        .addRoleOption(opt => opt.setName('manager_role').setDescription('Role that manages keys').setRequired(true))
+        .addRoleOption(opt => opt.setName('buyer_role').setDescription('Role given when redeemed').setRequired(true))
 ].map(cmd => cmd.toJSON());
 
 // 4. Register Commands
@@ -77,218 +63,227 @@ client.once('ready', async () => {
 // 5. Handle Commands & Interactions
 client.on('interactionCreate', async interaction => {
     
-    // ==========================================
-    // AUTOCOMPLETE HANDLER (For /setpanel)
-    // ==========================================
+    // --- AUTOCOMPLETE ---
     if (interaction.isAutocomplete()) {
         if (interaction.commandName === 'setpanel') {
             const focusedValue = interaction.options.getFocused();
-            
-            // Get user's API key
             const { data: user } = await supabase.from('users').select('api_key').eq('discord_id', interaction.user.id).maybeSingle();
             if (!user) return interaction.respond([{ name: "Please use /link first", value: "none" }]);
 
-            // Fetch their projects
             const { data: scripts } = await supabase.from('scripts').select('id, name').eq('api_key', user.api_key);
             if (!scripts || scripts.length === 0) return interaction.respond([{ name: "No projects found", value: "none" }]);
 
-            // Filter based on what they type
             const filtered = scripts
                 .filter(choice => choice.name.toLowerCase().includes(focusedValue.toLowerCase()))
                 .map(choice => ({ name: choice.name, value: choice.id }))
-                .slice(0, 25); // Discord only allows 25 choices max
+                .slice(0, 25);
 
             await interaction.respond(filtered);
         }
     }
 
-    // ==========================================
-    // SLASH COMMAND HANDLER
-    // ==========================================
+    // --- SLASH COMMANDS ---
     if (interaction.isChatInputCommand()) {
-
-        // --- /LINK COMMAND ---
+        
         if (interaction.commandName === 'link') {
             const apiKey = interaction.options.getString('api_key');
-            const role = interaction.options.getRole('manager_role');
-            const roleId = role ? role.id : null;
-
-            const { data: users, error: fetchErr } = await supabase.from('users').select('*').eq('api_key', apiKey).limit(1);
-            if (fetchErr) return interaction.reply({ content: `Database Error: ${fetchErr.message}`, ephemeral: true });
-
-            const user = users && users.length > 0 ? users[0] : null;
-
-            if (user) {
-                await supabase.from('users').update({ discord_id: interaction.user.id, manager_role_id: roleId }).eq('api_key', apiKey);
-                return interaction.reply({ content: `✅ Successfully linked to API Key \`${apiKey}\`.`, ephemeral: true });
-            } else {
-                await supabase.from('users').insert({ api_key: apiKey, discord_id: interaction.user.id, manager_role_id: roleId });
-                return interaction.reply({ content: `✅ Created new account and linked to API Key \`${apiKey}\`.`, ephemeral: true });
-            }
-        }
-
-        // --- /PROJECTS COMMAND ---
-        if (interaction.commandName === 'projects') {
-            const { data: users, error } = await supabase.from('users').select('api_key').eq('discord_id', interaction.user.id).limit(1);
-            if (error) return interaction.reply({ content: `Database Error: ${error.message}`, ephemeral: true });
+            const { data: users } = await supabase.from('users').select('*').eq('api_key', apiKey).limit(1);
             
-            const user = users && users.length > 0 ? users[0] : null;
-            if (!user) return interaction.reply({ content: "You need to `/link` your API key first!", ephemeral: true });
-
-            const { data: scripts } = await supabase.from('scripts').select('id, name, keyless').eq('api_key', user.api_key);
-            if (!scripts || scripts.length === 0) return interaction.reply({ content: `Linked to \`${user.api_key}\` but you don't have any projects yet.`, ephemeral: true });
-
-            const embed = new EmbedBuilder()
-                .setTitle('📁 Your Luarix Projects')
-                .setColor(0xf5c518)
-                .setDescription(scripts.map(s => `**${s.name}**\nID: \`${s.id}\`\nKeyless: ${s.keyless ? '✅' : '❌'}`).join('\n\n'));
-
-            interaction.reply({ embeds: [embed], ephemeral: true });
+            if (users && users.length > 0) {
+                await supabase.from('users').update({ discord_id: interaction.user.id }).eq('api_key', apiKey);
+            } else {
+                await supabase.from('users').insert({ api_key: apiKey, discord_id: interaction.user.id });
+            }
+            return interaction.reply({ content: `✅ Successfully linked to API Key \`${apiKey}\`.`, ephemeral: true });
         }
 
-        // --- /CREATEKEY COMMAND ---
         if (interaction.commandName === 'createkey') {
             const days = interaction.options.getInteger('days');
+            const { data: users } = await supabase.from('users').select('api_key').eq('discord_id', interaction.user.id).limit(1);
+            if (!users || users.length === 0) return interaction.reply({ content: "You need to `/link` your API key first!", ephemeral: true });
 
-            const { data: users, error: userErr } = await supabase.from('users').select('api_key').eq('discord_id', interaction.user.id).limit(1);
-            if (userErr) return interaction.reply({ content: `Database Error: ${userErr.message}`, ephemeral: true });
-            
-            const user = users && users.length > 0 ? users[0] : null;
-            if (!user) return interaction.reply({ content: "You need to `/link` your API key first!", ephemeral: true });
-
-            const { data: scripts } = await supabase.from('scripts').select('id, name').eq('api_key', user.api_key);
-            if (!scripts || scripts.length === 0) return interaction.reply({ content: "You don't have any projects to generate keys for.", ephemeral: true });
+            const { data: scripts } = await supabase.from('scripts').select('id, name').eq('api_key', users[0].api_key);
+            if (!scripts || scripts.length === 0) return interaction.reply({ content: "You don't have any projects.", ephemeral: true });
 
             const selectMenu = new StringSelectMenuBuilder()
                 .setCustomId(`createkey_select_${days}`)
                 .setPlaceholder('Select a project')
-                .addOptions(scripts.map(s => ({
-                    label: s.name,
-                    value: s.id,
-                    description: `ID: ${s.id}`
-                })));
+                .addOptions(scripts.map(s => ({ label: s.name, value: s.id })));
 
-            const row = new ActionRowBuilder().addComponents(selectMenu);
-
-            interaction.reply({ content: '👇 **Select the project you want to generate a key for:**', components: [row], ephemeral: true });
+            interaction.reply({ content: '👇 **Select the project:**', components: [new ActionRowBuilder().addComponents(selectMenu)], ephemeral: true });
         }
 
-        // --- /RESETHWID COMMAND ---
-        if (interaction.commandName === 'resethwid') {
-            const key = interaction.options.getString('key');
-            
-            const { data: keyData } = await supabase.from('script_keys').select('script_id').eq('key', key).limit(1);
-            if (!keyData || keyData.length === 0) return interaction.reply({ content: "Key not found.", ephemeral: true });
-
-            const { data: script } = await supabase.from('scripts').select('api_key').eq('id', keyData[0].script_id).limit(1);
-            const { data: owner } = await supabase.from('users').select('discord_id, manager_role_id').eq('api_key', script[0].api_key).limit(1);
-
-            const isOwner = owner && owner.length > 0 && interaction.user.id === owner[0].discord_id;
-            const hasManagerRole = owner && owner.length > 0 && owner[0].manager_role_id && interaction.member.roles.cache.has(owner[0].manager_role_id);
-
-            if (!isOwner && !hasManagerRole) return interaction.reply({ content: "❌ You do not have permission.", ephemeral: true });
-
-            await supabase.from('script_keys').update({ hwid: null }).eq('key', key);
-            interaction.reply({ content: `✅ HWID reset for key \`${key}\`.`, ephemeral: true });
-        }
-
-        // --- /SETPANEL COMMAND ---
         if (interaction.commandName === 'setpanel') {
             const scriptId = interaction.options.getString('project');
             const managerRole = interaction.options.getRole('manager_role');
             const buyerRole = interaction.options.getRole('buyer_role');
 
-            // Verify the user actually owns this project
-            const { data: users } = await supabase.from('users').select('api_key').eq('discord_id', interaction.user.id).limit(1);
-            if (!users || users.length === 0) return interaction.reply({ content: "You need to /link first!", ephemeral: true });
-            
-            const { data: script } = await supabase.from('scripts').select('name, api_key').eq('id', scriptId).limit(1);
-            if (!script || script.length === 0 || script[0].api_key !== users[0].api_key) {
-                return interaction.reply({ content: "❌ You don't own this project.", ephemeral: true });
-            }
+            // Save the buyer role to the database for this script
+            await supabase.from('scripts').update({ buyer_role_id: buyerRole.id }).eq('id', scriptId);
 
-            // Build the Embed
+            const { data: script } = await supabase.from('scripts').select('name').eq('id', scriptId).single();
+
             const embed = new EmbedBuilder()
-                .setTitle(`${script[0].name} Control Panel`)
-                .setDescription(`This control panel is for the project: **${script[0].name}**\nIf you're a buyer, click on the buttons below to redeem your key, get the script or get your role.`)
-                .setColor(0xf5c518) // Gold line on the left
+                .setTitle(`${script.name} Control Panel`)
+                .setDescription(`This control panel is for the project: **${script.name}**\nIf you're a buyer, click on the buttons below to redeem your key, get the script or get your role.`)
+                .setColor(0xf5c518)
                 .setFooter({ text: `Sent by ${interaction.user.username} • ${new Date().toLocaleDateString()}` });
 
-            // Build the Buttons
-            const row = new ActionRowBuilder()
-                .addComponents(
-                    new ButtonBuilder()
-                        .setCustomId('panel_redeem')
-                        .setLabel('Redeem Key')
-                        .setEmoji('🗝️')
-                        .setStyle(ButtonStyle.Success),
-                    new ButtonBuilder()
-                        .setCustomId('panel_script')
-                        .setLabel('Get Script')
-                        .setEmoji('📜')
-                        .setStyle(ButtonStyle.Primary),
-                    new ButtonBuilder()
-                        .setCustomId('panel_role')
-                        .setLabel('Get Role')
-                        .setEmoji('👤')
-                        .setStyle(ButtonStyle.Primary),
-                    new ButtonBuilder()
-                        .setCustomId('panel_reset')
-                        .setLabel('Reset HWID')
-                        .setEmoji('⚙️')
-                        .setStyle(ButtonStyle.Secondary),
-                    new ButtonBuilder()
-                        .setCustomId('panel_stats')
-                        .setLabel('Get Stats')
-                        .setEmoji('📊')
-                        .setStyle(ButtonStyle.Secondary)
-                );
+            // Notice we attach the scriptId to the customId so the buttons know which script they belong to
+            const row = new ActionRowBuilder().addComponents(
+                new ButtonBuilder().setCustomId(`panel_redeem_${scriptId}`).setLabel('Redeem Key').setEmoji('🗝️').setStyle(ButtonStyle.Success),
+                new ButtonBuilder().setCustomId(`panel_script_${scriptId}`).setLabel('Get Script').setEmoji('📜').setStyle(ButtonStyle.Primary),
+                new ButtonBuilder().setCustomId(`panel_role_${scriptId}`).setLabel('Get Role').setEmoji('👤').setStyle(ButtonStyle.Primary),
+                new ButtonBuilder().setCustomId(`panel_reset_${scriptId}`).setLabel('Reset HWID').setEmoji('⚙️').setStyle(ButtonStyle.Secondary),
+                new ButtonBuilder().setCustomId(`panel_stats_${scriptId}`).setLabel('Get Stats').setEmoji('📊').setStyle(ButtonStyle.Secondary)
+            );
 
-            // Send the panel to the channel
             await interaction.channel.send({ embeds: [embed], components: [row] });
             interaction.reply({ content: "✅ Panel successfully created!", ephemeral: true });
         }
     }
 
-    // ==========================================
-    // DROPDOWN MENU & BUTTON HANDLERS
-    // ==========================================
-    
-    // Handle /createkey Dropdown
-    if (interaction.isStringSelectMenu()) {
-        if (interaction.customId.startsWith('createkey_select_')) {
-            const days = parseInt(interaction.customId.replace('createkey_select_', ''));
-            const scriptId = interaction.values[0];
+    // --- DROPDOWN MENU (Create Key) ---
+    if (interaction.isStringSelectMenu() && interaction.customId.startsWith('createkey_select_')) {
+        const days = parseInt(interaction.customId.replace('createkey_select_', ''));
+        const scriptId = interaction.values[0];
 
-            const key = "LXR-KEY-" + crypto.randomBytes(4).toString('hex').toUpperCase();
-            const expiresAt = new Date(Date.now() + days * 86400000).toISOString();
+        const key = "LXR-KEY-" + crypto.randomBytes(4).toString('hex').toUpperCase();
+        const expiresAt = new Date(Date.now() + days * 86400000).toISOString();
 
-            const { error } = await supabase.from('script_keys').insert({ key, script_id: scriptId, expires_at: expiresAt });
-            if (error) return interaction.update({ content: "Database error: " + error.message, components: [] });
+        await supabase.from('script_keys').insert({ key, script_id: scriptId, expires_at: expiresAt });
 
-            const { data: scriptData } = await supabase.from('scripts').select('name').eq('id', scriptId).limit(1);
+        const embed = new EmbedBuilder().setTitle('🔑 Key Generated').setColor(0xf5c518)
+            .addFields({ name: 'Key', value: `\`${key}\`` }, { name: 'Expires In', value: `${days} days` });
+        interaction.update({ content: null, embeds: [embed], components: [] });
+    }
 
-            const embed = new EmbedBuilder()
-                .setTitle('🔑 Key Generated')
-                .setColor(0xf5c518)
-                .addFields(
-                    { name: 'Project', value: scriptData && scriptData[0] ? scriptData[0].name : 'Unknown', inline: true },
-                    { name: 'Key', value: `\`${key}\``, inline: true },
-                    { name: 'Expires In', value: `${days} days`, inline: false }
-                );
+    // --- BUTTONS ---
+    if (interaction.isButton()) {
+        const parts = interaction.customId.split('_');
+        if (parts[0] === 'panel') {
+            const action = parts[1];
+            const scriptId = parts[2];
 
-            interaction.update({ content: null, embeds: [embed], components: [] });
+            // 1. REDEEM KEY (Opens the Modal)
+            if (action === 'redeem') {
+                const modal = new ModalBuilder()
+                    .setCustomId(`modal_redeem_${scriptId}`)
+                    .setTitle('Redeem a key');
+
+                const keyInput = new TextInputBuilder()
+                    .setCustomId('key_input')
+                    .setLabel("Enter script key below:")
+                    .setPlaceholder('LXR-KEY-...')
+                    .setStyle(TextInputStyle.Short)
+                    .setRequired(true);
+
+                modal.addComponents(new ActionRowBuilder().addComponents(keyInput));
+                return interaction.showModal(modal);
+            }
+
+            // For all other buttons, check if they have a valid key for this script
+            const { data: userKeys } = await supabase.from('script_keys').select('*')
+                .eq('script_id', scriptId)
+                .eq('discord_id', interaction.user.id)
+                .limit(1);
+
+            const userKey = userKeys && userKeys.length > 0 ? userKeys[0] : null;
+            const { data: script } = await supabase.from('scripts').select('buyer_role_id, name').eq('id', scriptId).single();
+
+            // 2. GET SCRIPT
+            if (action === 'script') {
+                if (!userKey) {
+                    return interaction.reply({ 
+                        embeds: [new EmbedBuilder().setTitle('Not whitelisted!').setColor(0xef4444).setDescription(`You need to be whitelisted to get this script.\nIf you have a script key, click on the **Redeem** button below to redeem it.`)], 
+                        ephemeral: true 
+                    });
+                }
+                
+                const loader = `script_key="${userKey.key}"; loadstring(game:HttpGet("https://luarix-eight.vercel.app/api/loader?id=${scriptId}"))()`;
+                return interaction.reply({ content: `Here is your loader for **${script.name}**:\n\`\`\`lua\n${loader}\n\`\`\``, ephemeral: true });
+            }
+
+            // 3. GET ROLE
+            if (action === 'role') {
+                if (!userKey) return interaction.reply({ content: "You need to redeem a key first!", ephemeral: true });
+                if (!script.buyer_role_id) return interaction.reply({ content: "The owner hasn't set a buyer role for this script.", ephemeral: true });
+
+                try {
+                    await interaction.member.roles.add(script.buyer_role_id);
+                    interaction.reply({ content: "✅ Role successfully given!", ephemeral: true });
+                } catch (err) {
+                    interaction.reply({ content: "❌ Failed to give role. The bot needs `Manage Roles` permission.", ephemeral: true });
+                }
+            }
+
+            // 4. RESET HWID
+            if (action === 'reset') {
+                if (!userKey) return interaction.reply({ content: "You need to redeem a key first!", ephemeral: true });
+                
+                await supabase.from('script_keys').update({ 
+                    hwid: null, 
+                    resets: (userKey.resets || 0) + 1,
+                    last_reset: new Date().toISOString()
+                }).eq('key', userKey.key);
+                
+                interaction.reply({ content: "✅ Your HWID has been successfully reset! You can now execute the script on your new device.", ephemeral: true });
+            }
+
+            // 5. GET STATS
+            if (action === 'stats') {
+                if (!userKey) return interaction.reply({ content: "You need to redeem a key first!", ephemeral: true });
+
+                const embed = new EmbedBuilder()
+                    .setTitle('Stats')
+                    .setColor(0x2b2d31)
+                    .setDescription(`
+**Total Executions:** \`${userKey.executions || 0}\` 🧠
+**HWID Status:** ${userKey.hwid ? 'Assigned ✅' : 'Not Assigned ❌'}
+**Key:** ||${userKey.key}|| 🔒
+**Total HWID Resets:** \`${userKey.resets || 0}\` ⚙️
+**Last Reset:** ${userKey.last_reset ? new Date(userKey.last_reset).toLocaleDateString() : 'Never'} 📅
+**Expires At:** ${userKey.expires_at ? new Date(userKey.expires_at).toLocaleDateString() : 'Never'} 📅
+**Banned:** ${userKey.banned ? 'Yes ❌' : 'No ✅'}
+**Note:** ${userKey.note || 'Not specified'}
+                    `)
+                    .setFooter({ text: `Today at ${new Date().toLocaleTimeString()}` });
+
+                interaction.reply({ embeds: [embed], ephemeral: true });
+            }
         }
     }
 
-    // Handle Panel Buttons
-    if (interaction.isButton()) {
-        // This catches all the buttons on the panel we just made
-        if (interaction.customId.startsWith('panel_')) {
-            return interaction.reply({ 
-                content: "🚧 This feature is currently under construction and will be available soon!", 
-                ephemeral: true 
-            });
+    // --- MODAL SUBMIT (Redeem Logic) ---
+    if (interaction.isModalSubmit()) {
+        if (interaction.customId.startsWith('modal_redeem_')) {
+            const scriptId = interaction.customId.split('_')[2];
+            const inputKey = interaction.fields.getTextInputValue('key_input').trim();
+
+            // 1. Check if key exists and belongs to this script
+            const { data: keyData } = await supabase.from('script_keys').select('*').eq('key', inputKey).eq('script_id', scriptId).limit(1);
+
+            if (!keyData || keyData.length === 0) {
+                return interaction.reply({ content: "❌ Invalid key for this project.", ephemeral: true });
+            }
+
+            const key = keyData[0];
+
+            // 2. Check if someone else already redeemed it
+            if (key.discord_id && key.discord_id !== interaction.user.id) {
+                return interaction.reply({ content: "❌ This key has already been redeemed by someone else.", ephemeral: true });
+            }
+
+            // 3. Save the discord ID to the key
+            await supabase.from('script_keys').update({ discord_id: interaction.user.id }).eq('key', inputKey);
+
+            // 4. Give them the buyer role instantly
+            const { data: script } = await supabase.from('scripts').select('buyer_role_id').eq('id', scriptId).single();
+            if (script.buyer_role_id) {
+                try { await interaction.member.roles.add(script.buyer_role_id); } catch(err) {}
+            }
+
+            interaction.reply({ content: "✅ Successfully redeemed key! You now have access to the script and your buyer role.", ephemeral: true });
         }
     }
 });
