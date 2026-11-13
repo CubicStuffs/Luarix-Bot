@@ -22,7 +22,7 @@ app.listen(process.env.PORT || 3000, () => console.log('Web server running.'));
 const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_KEY);
 const client = new Client({ intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMembers] });
 
-// 3. Define Slash Commands (Removed script_id from /createkey)
+// 3. Define Slash Commands
 const commands = [
     new SlashCommandBuilder()
         .setName('link')
@@ -55,30 +55,54 @@ client.once('ready', async () => {
 // 5. Handle Commands
 client.on('interactionCreate', async interaction => {
     
-    // --- Handle Slash Commands ---
     if (interaction.isChatInputCommand()) {
 
-        // LINK COMMAND
+        // --- /LINK COMMAND ---
         if (interaction.commandName === 'link') {
             const apiKey = interaction.options.getString('api_key');
             const role = interaction.options.getRole('manager_role');
             const roleId = role ? role.id : null;
 
-            const { data: user, error } = await supabase.from('users').select('*').eq('api_key', apiKey).single();
-            if (error && error.code !== 'PGRST116') return interaction.reply({ content: "Database error.", ephemeral: true });
+            // Use maybeSingle() to prevent crashes if 0 rows are found
+            const { data: user, error: fetchErr } = await supabase.from('users').select('*').eq('api_key', apiKey).maybeSingle();
+
+            if (fetchErr) {
+                return interaction.reply({ content: `Database Error: ${fetchErr.message}`, ephemeral: true });
+            }
 
             if (user) {
-                await supabase.from('users').update({ discord_id: interaction.user.id, manager_role_id: roleId }).eq('api_key', apiKey);
-                return interaction.reply({ content: `✅ Successfully linked to API Key \`${apiKey}\`. \nManager Role: ${role ? role.name : "None"}`, ephemeral: true });
+                // User exists in database (Website created it). Update the Discord ID.
+                const { error: updateErr } = await supabase.from('users').update({ 
+                    discord_id: interaction.user.id, 
+                    manager_role_id: roleId 
+                }).eq('api_key', apiKey);
+
+                if (updateErr) {
+                    return interaction.reply({ content: `Failed to save Discord ID: ${updateErr.message}`, ephemeral: true });
+                }
+
+                return interaction.reply({ content: `✅ Successfully linked to API Key \`${apiKey}\`.`, ephemeral: true });
             } else {
-                await supabase.from('users').insert({ api_key: apiKey, discord_id: interaction.user.id, manager_role_id: roleId });
-                return interaction.reply({ content: `✅ Successfully created and linked to API Key \`${apiKey}\`. \nManager Role: ${role ? role.name : "None"}`, ephemeral: true });
+                // User doesn't exist (Maybe they used an Admin key). Create a new row.
+                const { error: insertErr } = await supabase.from('users').insert({ 
+                    api_key: apiKey, 
+                    discord_id: interaction.user.id, 
+                    manager_role_id: roleId 
+                });
+
+                if (insertErr) {
+                    return interaction.reply({ content: `Failed to create user: ${insertErr.message}`, ephemeral: true });
+                }
+
+                return interaction.reply({ content: `✅ Created new account and linked to API Key \`${apiKey}\`.`, ephemeral: true });
             }
         }
 
-        // PROJECTS COMMAND
+        // --- /PROJECTS COMMAND ---
         if (interaction.commandName === 'projects') {
-            const { data: user } = await supabase.from('users').select('api_key').eq('discord_id', interaction.user.id).single();
+            const { data: user, error } = await supabase.from('users').select('api_key').eq('discord_id', interaction.user.id).maybeSingle();
+            
+            if (error) return interaction.reply({ content: `Database Error: ${error.message}`, ephemeral: true });
             if (!user) return interaction.reply({ content: "You need to `/link` your API key first!", ephemeral: true });
 
             const { data: scripts } = await supabase.from('scripts').select('id, name, keyless').eq('api_key', user.api_key);
@@ -92,20 +116,19 @@ client.on('interactionCreate', async interaction => {
             interaction.reply({ embeds: [embed], ephemeral: true });
         }
 
-        // CREATE KEY COMMAND (NOW SHOWS A DROPDOWN)
+        // --- /CREATEKEY COMMAND ---
         if (interaction.commandName === 'createkey') {
             const days = interaction.options.getInteger('days');
 
-            // Fetch user's scripts
-            const { data: user } = await supabase.from('users').select('api_key').eq('discord_id', interaction.user.id).single();
+            const { data: user, error: userErr } = await supabase.from('users').select('api_key').eq('discord_id', interaction.user.id).maybeSingle();
+            if (userErr) return interaction.reply({ content: `Database Error: ${userErr.message}`, ephemeral: true });
             if (!user) return interaction.reply({ content: "You need to `/link` your API key first!", ephemeral: true });
 
             const { data: scripts } = await supabase.from('scripts').select('id, name').eq('api_key', user.api_key);
             if (!scripts || scripts.length === 0) return interaction.reply({ content: "You don't have any projects to generate keys for.", ephemeral: true });
 
-            // Create Dropdown Menu
             const selectMenu = new StringSelectMenuBuilder()
-                .setCustomId(`createkey_select_${days}`) // Pass days in customId
+                .setCustomId(`createkey_select_${days}`)
                 .setPlaceholder('Select a project')
                 .addOptions(scripts.map(s => ({
                     label: s.name,
@@ -115,24 +138,21 @@ client.on('interactionCreate', async interaction => {
 
             const row = new ActionRowBuilder().addComponents(selectMenu);
 
-            interaction.reply({ 
-                content: '👇 **Select the project you want to generate a key for:**', 
-                components: [row], 
-                ephemeral: true 
-            });
+            interaction.reply({ content: '👇 **Select the project you want to generate a key for:**', components: [row], ephemeral: true });
         }
 
-        // RESET HWID COMMAND
+        // --- /RESETHWID COMMAND ---
         if (interaction.commandName === 'resethwid') {
             const key = interaction.options.getString('key');
-            const { data: keyData } = await supabase.from('script_keys').select('script_id').eq('key', key).single();
+            
+            const { data: keyData } = await supabase.from('script_keys').select('script_id').eq('key', key).maybeSingle();
             if (!keyData) return interaction.reply({ content: "Key not found.", ephemeral: true });
 
-            const { data: script } = await supabase.from('scripts').select('api_key').eq('id', keyData.script_id).single();
-            const { data: owner } = await supabase.from('users').select('discord_id, manager_role_id').eq('api_key', script.api_key).single();
+            const { data: script } = await supabase.from('scripts').select('api_key').eq('id', keyData.script_id).maybeSingle();
+            const { data: owner } = await supabase.from('users').select('discord_id, manager_role_id').eq('api_key', script.api_key).maybeSingle();
 
-            const isOwner = interaction.user.id === owner.discord_id;
-            const hasManagerRole = owner.manager_role_id && interaction.member.roles.cache.has(owner.manager_role_id);
+            const isOwner = interaction.user.id === owner?.discord_id;
+            const hasManagerRole = owner?.manager_role_id && interaction.member.roles.cache.has(owner.manager_role_id);
 
             if (!isOwner && !hasManagerRole) return interaction.reply({ content: "❌ You do not have permission.", ephemeral: true });
 
@@ -144,21 +164,15 @@ client.on('interactionCreate', async interaction => {
     // --- Handle Dropdown Menu Selection ---
     if (interaction.isStringSelectMenu()) {
         if (interaction.customId.startsWith('createkey_select_')) {
-            // Extract 'days' from the customId
             const days = parseInt(interaction.customId.replace('createkey_select_', ''));
-            const scriptId = interaction.values[0]; // The selected script ID
+            const scriptId = interaction.values[0];
 
-            // Generate Key
             const key = "LXR-KEY-" + crypto.randomBytes(4).toString('hex').toUpperCase();
             const expiresAt = new Date(Date.now() + days * 86400000).toISOString();
 
             const { error } = await supabase.from('script_keys').insert({ key, script_id: scriptId, expires_at: expiresAt });
-            
-            if (error) {
-                return interaction.update({ content: "Database error: " + error.message, components: [] });
-            }
+            if (error) return interaction.update({ content: "Database error: " + error.message, components: [] });
 
-            // Find the selected script name for the embed
             const { data: scriptData } = await supabase.from('scripts').select('name').eq('id', scriptId).single();
 
             const embed = new EmbedBuilder()
@@ -170,7 +184,6 @@ client.on('interactionCreate', async interaction => {
                     { name: 'Expires In', value: `${days} days`, inline: false }
                 );
 
-            // Update the message to show the key and remove the dropdown
             interaction.update({ content: null, embeds: [embed], components: [] });
         }
     }
