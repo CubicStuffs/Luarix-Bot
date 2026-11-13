@@ -18,16 +18,13 @@ const { createClient } = require('@supabase/supabase-js');
 const crypto = require('crypto');
 const express = require('express');
 
-// 1. Keep Render Alive
 const app = express();
 app.get('/', (req, res) => res.send('Luarix Bot is Online!'));
 app.listen(process.env.PORT || 3000, () => console.log('Web server running.'));
 
-// 2. Setup Supabase & Discord
 const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_KEY);
 const client = new Client({ intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMembers] });
 
-// 3. Define Slash Commands
 const commands = [
     new SlashCommandBuilder()
         .setName('link')
@@ -44,7 +41,6 @@ const commands = [
         .addStringOption(opt => opt.setName('project').setDescription('Select your project').setRequired(true).setAutocomplete(true))
         .addRoleOption(opt => opt.setName('manager_role').setDescription('Role that manages keys').setRequired(true))
         .addRoleOption(opt => opt.setName('buyer_role').setDescription('Role given when redeemed').setRequired(true)),
-    // NEW: /whitelist Command
     new SlashCommandBuilder()
         .setName('whitelist')
         .setDescription('Whitelist a user to use a project without a key')
@@ -54,7 +50,6 @@ const commands = [
         .addChannelOption(opt => opt.setName('channel').setDescription('The channel where the panel is located').setRequired(true))
 ].map(cmd => cmd.toJSON());
 
-// 4. Register Commands
 client.once('ready', async () => {
     console.log(`Logged in as ${client.user.tag}!`);
     const rest = new REST({ version: '10' }).setToken(process.env.DISCORD_TOKEN);
@@ -64,7 +59,6 @@ client.once('ready', async () => {
     } catch (error) { console.error(error); }
 });
 
-// 5. Handle Commands & Interactions
 client.on('interactionCreate', async interaction => {
     
     // --- AUTOCOMPLETE ---
@@ -95,9 +89,8 @@ client.on('interactionCreate', async interaction => {
             const role = interaction.options.getRole('manager_role');
             const roleId = role ? role.id : null;
 
-            const { data: users, error: fetchErr } = await supabase.from('users').select('*').eq('api_key', apiKey).limit(1);
-            if (fetchErr) return interaction.reply({ content: `Database Error: ${fetchErr.message}`, ephemeral: true });
-
+            const { data: users } = await supabase.from('users').select('*').eq('api_key', apiKey).limit(1);
+            
             if (users && users.length > 0) {
                 await supabase.from('users').update({ discord_id: interaction.user.id, manager_role_id: roleId }).eq('api_key', apiKey);
                 return interaction.reply({ content: `✅ Successfully linked to API Key \`${apiKey}\`.`, ephemeral: true });
@@ -127,10 +120,9 @@ client.on('interactionCreate', async interaction => {
             const scriptId = interaction.options.getString('project');
             const buyerRole = interaction.options.getRole('buyer_role');
             
-            if (scriptId === "none") return interaction.reply({ content: "You must link your account and create a project first.", ephemeral: true });
+            if (scriptId === "none") return interaction.reply({ content: "Please select a valid project from the dropdown.", ephemeral: true });
 
             await supabase.from('scripts').update({ buyer_role_id: buyerRole.id }).eq('id', scriptId);
-
             const { data: script } = await supabase.from('scripts').select('name').eq('id', scriptId).single();
 
             const embed = new EmbedBuilder()
@@ -151,18 +143,25 @@ client.on('interactionCreate', async interaction => {
             interaction.reply({ content: "✅ Panel successfully created!", ephemeral: true });
         }
 
-        // NEW: /WHITELIST COMMAND
+        // FIXED /WHITELIST COMMAND
         if (interaction.commandName === 'whitelist') {
             const targetUser = interaction.options.getUser('user');
             const scriptId = interaction.options.getString('project');
             const days = interaction.options.getInteger('days');
             const channel = interaction.options.getChannel('channel');
 
-            if (scriptId === "none") return interaction.reply({ content: "Invalid project.", ephemeral: true });
+            // 1. Safety Check: Does this script actually exist?
+            if (scriptId === "none") {
+                return interaction.reply({ content: "❌ Invalid project selected. Please make sure you selected it from the dropdown.", ephemeral: true });
+            }
 
+            const { data: scriptExists } = await supabase.from('scripts').select('id').eq('id', scriptId).maybeSingle();
+            if (!scriptExists) {
+                return interaction.reply({ content: "❌ Error: This project ID was not found in the database. Please refresh Discord and try again.", ephemeral: true });
+            }
+
+            // 2. Insert into Whitelists
             const expiresAt = new Date(Date.now() + days * 86400000).toISOString();
-
-            // Save to database
             const { error } = await supabase.from('whitelists').insert({ 
                 discord_id: targetUser.id, 
                 script_id: scriptId, 
@@ -171,7 +170,7 @@ client.on('interactionCreate', async interaction => {
 
             if (error) return interaction.reply({ content: `Database error: ${error.message}`, ephemeral: true });
 
-            // Public Message (Exactly like your screenshot)
+            // 3. Send the public success message
             const successEmbed = new EmbedBuilder()
                 .setColor(0x2b2d31)
                 .setDescription(`<@${targetUser.id}> **You have been whitelisted!**\nYou can access the script via this message --> ${channel}`);
@@ -229,7 +228,7 @@ client.on('interactionCreate', async interaction => {
                 
                 let finalKey = userKey ? userKey.key : null;
 
-                // If they are whitelisted but don't have a key yet, auto-generate one for them
+                // Auto-generate VIP key for whitelisted users
                 if (!finalKey && isWhitelisted) {
                     finalKey = "LXR-VIP-" + crypto.randomBytes(4).toString('hex').toUpperCase();
                     await supabase.from('script_keys').insert({ key: finalKey, script_id: scriptId, discord_id: interaction.user.id, expires_at: null });
@@ -254,7 +253,6 @@ client.on('interactionCreate', async interaction => {
             if (action === 'reset') {
                 if (!userKey && !isWhitelisted) return interaction.reply({ content: "You need to redeem a key first!", ephemeral: true });
                 
-                // Find the key to reset
                 let keyToReset = userKey ? userKey.key : null;
                 if (!keyToReset && isWhitelisted) {
                     const { data: vipKey } = await supabase.from('script_keys').select('key').eq('script_id', scriptId).eq('discord_id', interaction.user.id).limit(1);
@@ -271,7 +269,6 @@ client.on('interactionCreate', async interaction => {
             if (action === 'stats') {
                 if (!userKey && !isWhitelisted) return interaction.reply({ content: "You need to redeem a key first!", ephemeral: true });
 
-                // Get the key info (either normal key or auto-generated VIP key)
                 let statsKey = userKey;
                 if (!statsKey && isWhitelisted) {
                     const { data: vipKey } = await supabase.from('script_keys').select('*').eq('script_id', scriptId).eq('discord_id', interaction.user.id).limit(1);
