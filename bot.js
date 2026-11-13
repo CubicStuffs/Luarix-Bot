@@ -23,7 +23,6 @@ app.get('/', (req, res) => res.send('Luarix Bot is Online!'));
 app.listen(process.env.PORT || 3000, () => console.log('Web server running.'));
 
 const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_KEY);
-// We need GuildMembers intent enabled in Discord Developer Portal for this to work
 const client = new Client({ intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMembers] });
 
 function calculateExpiry(daysInput) {
@@ -62,7 +61,6 @@ const commands = [
         .addStringOption(opt => opt.setName('project').setDescription('Select your project').setRequired(true).setAutocomplete(true))
         .addStringOption(opt => opt.setName('reason').setDescription('Reason for the blacklist').setRequired(true))
         .addStringOption(opt => opt.setName('days').setDescription('Days until expiry or "forever"').setRequired(true)),
-    // NEW: /masswhitelist COMMAND
     new SlashCommandBuilder()
         .setName('masswhitelist')
         .setDescription('Whitelist everyone with a specific role')
@@ -202,7 +200,7 @@ client.on('interactionCreate', async interaction => {
             interaction.reply({ content: "✅ User blacklisted successfully.", ephemeral: true });
         }
 
-        // NEW: /MASSWHITELIST COMMAND
+        // FIXED: /MASSWHITELIST COMMAND
         if (interaction.commandName === 'masswhitelist') {
             const targetRole = interaction.options.getRole('role');
             const scriptId = interaction.options.getString('project');
@@ -211,7 +209,11 @@ client.on('interactionCreate', async interaction => {
 
             if (scriptId === "none" || expiresAt === undefined) return interaction.reply({ content: "❌ Invalid project or days.", ephemeral: true });
 
-            // Permission Check: Is this user the owner OR do they have the manager role?
+            // Safety check: Prevent mass whitelisting @everyone
+            if (targetRole.id === interaction.guild.id) {
+                return interaction.reply({ content: "❌ You cannot mass-whitelist the `@everyone` role. Please select a specific role like `@Buyer`.", ephemeral: true });
+            }
+
             const { data: users } = await supabase.from('users').select('api_key, manager_role_id, discord_id').eq('discord_id', interaction.user.id).limit(1);
             const { data: script } = await supabase.from('scripts').select('api_key, name').eq('id', scriptId).limit(1);
             
@@ -224,30 +226,28 @@ client.on('interactionCreate', async interaction => {
                 return interaction.reply({ content: "❌ You must be the project owner or have the Manager role to use this.", ephemeral: true });
             }
 
-            // Defer reply because fetching members might take a few seconds
             await interaction.deferReply({ ephemeral: true });
 
             try {
-                // Fetch all members with that role in the server
-                const members = await interaction.guild.members.fetch({ role: targetRole.id });
+                // Fetch all members and manually filter to be 100% sure
+                const allMembers = await interaction.guild.members.fetch();
+                const membersWithRole = allMembers.filter(member => member.roles.cache.has(targetRole.id));
                 
-                if (members.size === 0) {
+                if (membersWithRole.size === 0) {
                     return interaction.editReply({ content: `❌ No members found with the role **${targetRole.name}**.` });
                 }
 
-                // Prepare data for bulk insert
-                const whitelistData = members.map(member => ({
+                const whitelistData = membersWithRole.map(member => ({
                     discord_id: member.id,
                     script_id: scriptId,
                     expires_at: expiresAt
                 }));
 
-                // Insert into Supabase
                 const { error } = await supabase.from('whitelists').insert(whitelistData);
                 if (error) throw error;
 
                 interaction.editReply({ 
-                    content: `✅ Successfully mass-whitelisted **${members.size}** users with the **${targetRole.name}** role for the project **${script[0].name}**!` 
+                    content: `✅ Successfully mass-whitelisted **${membersWithRole.size}** users with the **${targetRole.name}** role for the project **${script[0].name}**!` 
                 });
             } catch (err) {
                 interaction.editReply({ content: `❌ An error occurred: ${err.message}` });
