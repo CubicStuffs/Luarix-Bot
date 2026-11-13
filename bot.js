@@ -23,6 +23,7 @@ app.get('/', (req, res) => res.send('Luarix Bot is Online!'));
 app.listen(process.env.PORT || 3000, () => console.log('Web server running.'));
 
 const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_KEY);
+// We need GuildMembers intent enabled in Discord Developer Portal for this to work
 const client = new Client({ intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMembers] });
 
 function calculateExpiry(daysInput) {
@@ -30,11 +31,6 @@ function calculateExpiry(daysInput) {
     const days = parseInt(daysInput);
     if (isNaN(days) || days < 1) return undefined;
     return new Date(Date.now() + days * 86400000).toISOString();
-}
-
-function formatExpiry(expiresAt) {
-    if (!expiresAt) return 'Forever';
-    return new Date(expiresAt).toLocaleDateString();
 }
 
 const commands = [
@@ -46,7 +42,7 @@ const commands = [
     new SlashCommandBuilder()
         .setName('createkey')
         .setDescription('Generate a new script key')
-        .addStringOption(opt => opt.setName('days').setDescription('Days until expiry (e.g. 30) or type "forever"').setRequired(true)),
+        .addStringOption(opt => opt.setName('days').setDescription('Days until expiry or "forever"').setRequired(true)),
     new SlashCommandBuilder()
         .setName('setpanel')
         .setDescription('Create a key redemption panel for a project')
@@ -65,6 +61,13 @@ const commands = [
         .addUserOption(opt => opt.setName('user').setDescription('The user to blacklist').setRequired(true))
         .addStringOption(opt => opt.setName('project').setDescription('Select your project').setRequired(true).setAutocomplete(true))
         .addStringOption(opt => opt.setName('reason').setDescription('Reason for the blacklist').setRequired(true))
+        .addStringOption(opt => opt.setName('days').setDescription('Days until expiry or "forever"').setRequired(true)),
+    // NEW: /masswhitelist COMMAND
+    new SlashCommandBuilder()
+        .setName('masswhitelist')
+        .setDescription('Whitelist everyone with a specific role')
+        .addRoleOption(opt => opt.setName('role').setDescription('The role to whitelist').setRequired(true))
+        .addStringOption(opt => opt.setName('project').setDescription('Select your project').setRequired(true).setAutocomplete(true))
         .addStringOption(opt => opt.setName('days').setDescription('Days until expiry or "forever"').setRequired(true))
 ].map(cmd => cmd.toJSON());
 
@@ -81,7 +84,7 @@ client.on('interactionCreate', async interaction => {
     
     // --- AUTOCOMPLETE ---
     if (interaction.isAutocomplete()) {
-        if (['setpanel', 'whitelist', 'blacklist'].includes(interaction.commandName)) {
+        if (['setpanel', 'whitelist', 'blacklist', 'masswhitelist'].includes(interaction.commandName)) {
             const focusedValue = interaction.options.getFocused();
             const { data: user } = await supabase.from('users').select('api_key').eq('discord_id', interaction.user.id).limit(1);
             
@@ -141,12 +144,7 @@ client.on('interactionCreate', async interaction => {
             const buyerRole = interaction.options.getRole('buyer_role');
             if (scriptId === "none") return interaction.reply({ content: "Please select a valid project.", ephemeral: true });
 
-            // Save the channel ID where the panel is created
-            await supabase.from('scripts').update({ 
-                buyer_role_id: buyerRole.id,
-                panel_channel_id: interaction.channel.id 
-            }).eq('id', scriptId);
-            
+            await supabase.from('scripts').update({ buyer_role_id: buyerRole.id, panel_channel_id: interaction.channel.id }).eq('id', scriptId);
             const { data: script } = await supabase.from('scripts').select('name').eq('id', scriptId).single();
 
             const embed = new EmbedBuilder()
@@ -175,16 +173,12 @@ client.on('interactionCreate', async interaction => {
             
             if (scriptId === "none" || expiresAt === undefined) return interaction.reply({ content: "❌ Invalid project or days.", ephemeral: true });
 
-            // Get the panel channel ID
             const { data: scriptData } = await supabase.from('scripts').select('panel_channel_id').eq('id', scriptId).single();
             const panelChannel = scriptData?.panel_channel_id ? `<#${scriptData.panel_channel_id}>` : "the panel channel";
 
-            const { error } = await supabase.from('whitelists').insert({ 
-                discord_id: targetUser.id, script_id: scriptId, expires_at: expiresAt 
-            });
+            const { error } = await supabase.from('whitelists').insert({ discord_id: targetUser.id, script_id: scriptId, expires_at: expiresAt });
             if (error) return interaction.reply({ content: `Database error: ${error.message}`, ephemeral: true });
 
-            // Send message mentioning the PANEL channel, not current channel
             await interaction.channel.send(`<@${targetUser.id}> **You have been whitelisted!**\nYou can access the script via this message --> ${panelChannel}`);
             interaction.reply({ content: "✅ User whitelisted successfully.", ephemeral: true });
         }
@@ -198,18 +192,66 @@ client.on('interactionCreate', async interaction => {
             
             if (scriptId === "none" || expiresAt === undefined) return interaction.reply({ content: "❌ Invalid project or days.", ephemeral: true });
 
-            // Get the panel channel ID
             const { data: scriptData } = await supabase.from('scripts').select('panel_channel_id').eq('id', scriptId).single();
             const panelChannel = scriptData?.panel_channel_id ? `<#${scriptData.panel_channel_id}>` : "the panel channel";
 
-            const { error } = await supabase.from('blacklists').insert({ 
-                discord_id: targetUser.id, script_id: scriptId, reason: reason, expires_at: expiresAt 
-            });
+            const { error } = await supabase.from('blacklists').insert({ discord_id: targetUser.id, script_id: scriptId, reason: reason, expires_at: expiresAt });
             if (error) return interaction.reply({ content: `Database error: ${error.message}`, ephemeral: true });
 
-            // Send message mentioning the PANEL channel
             await interaction.channel.send(`<@${targetUser.id}> **You have been blacklisted!** ⛔\nTo find out why, go to ${panelChannel} and click on **Stats** button`);
             interaction.reply({ content: "✅ User blacklisted successfully.", ephemeral: true });
+        }
+
+        // NEW: /MASSWHITELIST COMMAND
+        if (interaction.commandName === 'masswhitelist') {
+            const targetRole = interaction.options.getRole('role');
+            const scriptId = interaction.options.getString('project');
+            const days = interaction.options.getString('days');
+            const expiresAt = calculateExpiry(days);
+
+            if (scriptId === "none" || expiresAt === undefined) return interaction.reply({ content: "❌ Invalid project or days.", ephemeral: true });
+
+            // Permission Check: Is this user the owner OR do they have the manager role?
+            const { data: users } = await supabase.from('users').select('api_key, manager_role_id, discord_id').eq('discord_id', interaction.user.id).limit(1);
+            const { data: script } = await supabase.from('scripts').select('api_key, name').eq('id', scriptId).limit(1);
+            
+            if (!script || script.length === 0) return interaction.reply({ content: "❌ Project not found.", ephemeral: true });
+
+            const isOwner = users && users.length > 0 && script[0].api_key === users[0].api_key;
+            const hasManagerRole = users && users.length > 0 && users[0].manager_role_id && interaction.member.roles.cache.has(users[0].manager_role_id);
+
+            if (!isOwner && !hasManagerRole) {
+                return interaction.reply({ content: "❌ You must be the project owner or have the Manager role to use this.", ephemeral: true });
+            }
+
+            // Defer reply because fetching members might take a few seconds
+            await interaction.deferReply({ ephemeral: true });
+
+            try {
+                // Fetch all members with that role in the server
+                const members = await interaction.guild.members.fetch({ role: targetRole.id });
+                
+                if (members.size === 0) {
+                    return interaction.editReply({ content: `❌ No members found with the role **${targetRole.name}**.` });
+                }
+
+                // Prepare data for bulk insert
+                const whitelistData = members.map(member => ({
+                    discord_id: member.id,
+                    script_id: scriptId,
+                    expires_at: expiresAt
+                }));
+
+                // Insert into Supabase
+                const { error } = await supabase.from('whitelists').insert(whitelistData);
+                if (error) throw error;
+
+                interaction.editReply({ 
+                    content: `✅ Successfully mass-whitelisted **${members.size}** users with the **${targetRole.name}** role for the project **${script[0].name}**!` 
+                });
+            } catch (err) {
+                interaction.editReply({ content: `❌ An error occurred: ${err.message}` });
+            }
         }
     }
 
@@ -246,11 +288,11 @@ client.on('interactionCreate', async interaction => {
             const activeBlacklist = blacklists?.find(b => !b.expires_at || new Date(b.expires_at) > new Date());
 
             if (activeBlacklist) {
-                const banMsg = `You are blacklisted from this project with the reason:\n\`\`\`\n${activeBlacklist.reason}\n\`\`\`\n⚠️ This ban will expire **${formatExpiry(activeBlacklist.expires_at)}**`;
+                const banMsg = `You are blacklisted from this project with the reason:\n\`\`\`\n${activeBlacklist.reason}\n\`\`\`\n⚠️ This ban will expire **${activeBlacklist.expires_at ? new Date(activeBlacklist.expires_at).toLocaleDateString() : 'Never'}**`;
                 
-                if (action === 'script') return interaction.reply({ embeds: [new EmbedBuilder().setTitle('Unable to send script').setColor(0xef4444).setDescription(banMsg)] });
-                if (action === 'role') return interaction.reply({ embeds: [new EmbedBuilder().setTitle('Unable to give role').setColor(0xef4444).setDescription(banMsg)] });
-                if (action === 'reset') return interaction.reply({ embeds: [new EmbedBuilder().setTitle('Unable to reset HWID!').setColor(0xef4444).setDescription(`User is temporarily blacklisted, try again later.`)] });
+                if (action === 'script') return interaction.reply({ embeds: [new EmbedBuilder().setTitle('Unable to send script').setColor(0xef4444).setDescription(banMsg)], ephemeral: true });
+                if (action === 'role') return interaction.reply({ embeds: [new EmbedBuilder().setTitle('Unable to give role').setColor(0xef4444).setDescription(banMsg)], ephemeral: true });
+                if (action === 'reset') return interaction.reply({ embeds: [new EmbedBuilder().setTitle('Unable to reset HWID!').setColor(0xef4444).setDescription(`User is temporarily blacklisted, try again later.`)], ephemeral: true });
             }
 
             const { data: userKeys } = await supabase.from('script_keys').select('*').eq('script_id', scriptId).eq('discord_id', interaction.user.id).limit(1);
@@ -327,7 +369,7 @@ client.on('interactionCreate', async interaction => {
 **Key:** ||${statsKey?.key || 'None'}|| 🔒
 **Total HWID Resets:** \`${statsKey?.resets || 0}\` ⚙️
 **Last Reset:** ${statsKey?.last_reset ? new Date(statsKey.last_reset).toLocaleDateString() : 'Never'} 📅
-**Expires At:** ${formatExpiry(statsKey?.expires_at)} 📅
+**Expires At:** ${statsKey?.expires_at ? new Date(statsKey.expires_at).toLocaleDateString() : 'Forever'} 📅
 **Blacklisted:** ${isBanned}
                     `)
                     .setFooter({ text: `Today at ${new Date().toLocaleTimeString()}` });
