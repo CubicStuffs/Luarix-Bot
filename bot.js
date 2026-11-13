@@ -41,13 +41,13 @@ const commands = [
         .addStringOption(opt => opt.setName('project').setDescription('Select your project').setRequired(true).setAutocomplete(true))
         .addRoleOption(opt => opt.setName('manager_role').setDescription('Role that manages keys').setRequired(true))
         .addRoleOption(opt => opt.setName('buyer_role').setDescription('Role given when redeemed').setRequired(true)),
+    // UPDATED: Removed channel option
     new SlashCommandBuilder()
         .setName('whitelist')
         .setDescription('Whitelist a user to use a project without a key')
         .addUserOption(opt => opt.setName('user').setDescription('The user to whitelist').setRequired(true))
         .addStringOption(opt => opt.setName('project').setDescription('Select your project').setRequired(true).setAutocomplete(true))
         .addIntegerOption(opt => opt.setName('days').setDescription('Days until expiry').setRequired(true))
-        .addChannelOption(opt => opt.setName('channel').setDescription('The channel where the panel is located').setRequired(true))
 ].map(cmd => cmd.toJSON());
 
 client.once('ready', async () => {
@@ -143,24 +143,17 @@ client.on('interactionCreate', async interaction => {
             interaction.reply({ content: "✅ Panel successfully created!", ephemeral: true });
         }
 
-        // FIXED /WHITELIST COMMAND
+        // UPDATED /WHITELIST COMMAND
         if (interaction.commandName === 'whitelist') {
             const targetUser = interaction.options.getUser('user');
             const scriptId = interaction.options.getString('project');
             const days = interaction.options.getInteger('days');
-            const channel = interaction.options.getChannel('channel');
 
-            // 1. Safety Check: Does this script actually exist?
-            if (scriptId === "none") {
-                return interaction.reply({ content: "❌ Invalid project selected. Please make sure you selected it from the dropdown.", ephemeral: true });
-            }
+            if (scriptId === "none") return interaction.reply({ content: "❌ Invalid project selected. Please choose from the dropdown.", ephemeral: true });
 
             const { data: scriptExists } = await supabase.from('scripts').select('id').eq('id', scriptId).maybeSingle();
-            if (!scriptExists) {
-                return interaction.reply({ content: "❌ Error: This project ID was not found in the database. Please refresh Discord and try again.", ephemeral: true });
-            }
+            if (!scriptExists) return interaction.reply({ content: "❌ Error: Project ID not found. Try refreshing Discord.", ephemeral: true });
 
-            // 2. Insert into Whitelists
             const expiresAt = new Date(Date.now() + days * 86400000).toISOString();
             const { error } = await supabase.from('whitelists').insert({ 
                 discord_id: targetUser.id, 
@@ -170,12 +163,9 @@ client.on('interactionCreate', async interaction => {
 
             if (error) return interaction.reply({ content: `Database error: ${error.message}`, ephemeral: true });
 
-            // 3. Send the public success message
-            const successEmbed = new EmbedBuilder()
-                .setColor(0x2b2d31)
-                .setDescription(`<@${targetUser.id}> **You have been whitelisted!**\nYou can access the script via this message --> ${channel}`);
-
-            await interaction.channel.send({ embeds: [successEmbed] });
+            // NEW: Send a clean text message, auto-detecting the current channel
+            await interaction.channel.send(`<@${targetUser.id}> **You have been whitelisted!**\nYou can access the script via this message --> <#${interaction.channel.id}>`);
+            
             interaction.reply({ content: "✅ User whitelisted successfully.", ephemeral: true });
         }
     }
@@ -228,7 +218,6 @@ client.on('interactionCreate', async interaction => {
                 
                 let finalKey = userKey ? userKey.key : null;
 
-                // Auto-generate VIP key for whitelisted users
                 if (!finalKey && isWhitelisted) {
                     finalKey = "LXR-VIP-" + crypto.randomBytes(4).toString('hex').toUpperCase();
                     await supabase.from('script_keys').insert({ key: finalKey, script_id: scriptId, discord_id: interaction.user.id, expires_at: null });
@@ -246,7 +235,7 @@ client.on('interactionCreate', async interaction => {
                     await interaction.member.roles.add(script.buyer_role_id);
                     interaction.reply({ content: "✅ Role successfully given!", ephemeral: true });
                 } catch (err) {
-                    interaction.reply({ content: "❌ Failed to give role. The bot needs `Manage Roles` permission and its role must be above the buyer role.", ephemeral: true });
+                    interaction.reply({ content: "❌ Failed to give role. The bot needs `Manage Roles` permission.", ephemeral: true });
                 }
             }
 
@@ -263,7 +252,7 @@ client.on('interactionCreate', async interaction => {
                     await supabase.from('script_keys').update({ hwid: null, resets: (userKey?.resets || 0) + 1, last_reset: new Date().toISOString() }).eq('key', keyToReset);
                 }
                 
-                interaction.reply({ content: "✅ Your HWID has been successfully reset! You can now execute the script on your new device.", ephemeral: true });
+                interaction.reply({ content: "✅ Your HWID has been successfully reset!", ephemeral: true });
             }
 
             if (action === 'stats') {
@@ -316,7 +305,7 @@ client.on('interactionCreate', async interaction => {
                 try { await interaction.member.roles.add(script.buyer_role_id); } catch(err) {}
             }
 
-            interaction.reply({ content: "✅ Successfully redeemed key! You now have access to the script and your buyer role.", ephemeral: true });
+            interaction.reply({ content: "✅ Successfully redeemed key! You now have access to the script.", ephemeral: true });
         }
     }
 });
