@@ -32,7 +32,8 @@ const commands = [
     new SlashCommandBuilder()
         .setName('link')
         .setDescription('Link your Luarix API Key to your Discord account')
-        .addStringOption(opt => opt.setName('api_key').setDescription('Your LXR-... API Key').setRequired(true)),
+        .addStringOption(opt => opt.setName('api_key').setDescription('Your LXR-... API Key').setRequired(true))
+        .addRoleOption(opt => opt.setName('manager_role').setDescription('The role allowed to manage keys').setRequired(false)), // FIXED: Added back
     new SlashCommandBuilder()
         .setName('createkey')
         .setDescription('Generate a new script key')
@@ -67,11 +68,19 @@ client.on('interactionCreate', async interaction => {
     if (interaction.isAutocomplete()) {
         if (interaction.commandName === 'setpanel') {
             const focusedValue = interaction.options.getFocused();
-            const { data: user } = await supabase.from('users').select('api_key').eq('discord_id', interaction.user.id).maybeSingle();
-            if (!user) return interaction.respond([{ name: "Please use /link first", value: "none" }]);
+            
+            // Check if they are linked
+            const { data: user } = await supabase.from('users').select('api_key').eq('discord_id', interaction.user.id).limit(1);
+            
+            if (!user || user.length === 0) {
+                return interaction.respond([{ name: "❌ Please use /link first", value: "none" }]);
+            }
 
-            const { data: scripts } = await supabase.from('scripts').select('id, name').eq('api_key', user.api_key);
-            if (!scripts || scripts.length === 0) return interaction.respond([{ name: "No projects found", value: "none" }]);
+            const { data: scripts } = await supabase.from('scripts').select('id, name').eq('api_key', user[0].api_key);
+            
+            if (!scripts || scripts.length === 0) {
+                return interaction.respond([{ name: "❌ No projects found on website", value: "none" }]);
+            }
 
             const filtered = scripts
                 .filter(choice => choice.name.toLowerCase().includes(focusedValue.toLowerCase()))
@@ -85,16 +94,37 @@ client.on('interactionCreate', async interaction => {
     // --- SLASH COMMANDS ---
     if (interaction.isChatInputCommand()) {
         
+        // FIXED /LINK COMMAND
         if (interaction.commandName === 'link') {
             const apiKey = interaction.options.getString('api_key');
-            const { data: users } = await supabase.from('users').select('*').eq('api_key', apiKey).limit(1);
+            const role = interaction.options.getRole('manager_role');
+            const roleId = role ? role.id : null;
+
+            const { data: users, error: fetchErr } = await supabase.from('users').select('*').eq('api_key', apiKey).limit(1);
             
+            if (fetchErr) return interaction.reply({ content: `Database Error: ${fetchErr.message}`, ephemeral: true });
+
             if (users && users.length > 0) {
-                await supabase.from('users').update({ discord_id: interaction.user.id }).eq('api_key', apiKey);
+                // User exists (Website created them)
+                const { error: updateErr } = await supabase.from('users').update({ 
+                    discord_id: interaction.user.id, 
+                    manager_role_id: roleId 
+                }).eq('api_key', apiKey);
+
+                if (updateErr) return interaction.reply({ content: `Failed to link: ${updateErr.message}`, ephemeral: true });
+                return interaction.reply({ content: `✅ Successfully linked to API Key \`${apiKey}\`.`, ephemeral: true });
             } else {
-                await supabase.from('users').insert({ api_key: apiKey, discord_id: interaction.user.id });
+                // User doesn't exist (Admin key). Create them with a dummy email to avoid DB errors.
+                const { error: insertErr } = await supabase.from('users').insert({ 
+                    api_key: apiKey, 
+                    discord_id: interaction.user.id, 
+                    manager_role_id: roleId,
+                    email: `discord_${interaction.user.id}@luarix.com` // Dummy email prevents crashes
+                });
+
+                if (insertErr) return interaction.reply({ content: `Failed to create user: ${insertErr.message}`, ephemeral: true });
+                return interaction.reply({ content: `✅ Created new account and linked to API Key \`${apiKey}\`.`, ephemeral: true });
             }
-            return interaction.reply({ content: `✅ Successfully linked to API Key \`${apiKey}\`.`, ephemeral: true });
         }
 
         if (interaction.commandName === 'createkey') {
@@ -115,10 +145,10 @@ client.on('interactionCreate', async interaction => {
 
         if (interaction.commandName === 'setpanel') {
             const scriptId = interaction.options.getString('project');
-            const managerRole = interaction.options.getRole('manager_role');
             const buyerRole = interaction.options.getRole('buyer_role');
+            
+            if (scriptId === "none") return interaction.reply({ content: "You must link your account and create a project first.", ephemeral: true });
 
-            // Save the buyer role to the database for this script
             await supabase.from('scripts').update({ buyer_role_id: buyerRole.id }).eq('id', scriptId);
 
             const { data: script } = await supabase.from('scripts').select('name').eq('id', scriptId).single();
@@ -129,7 +159,6 @@ client.on('interactionCreate', async interaction => {
                 .setColor(0xf5c518)
                 .setFooter({ text: `Sent by ${interaction.user.username} • ${new Date().toLocaleDateString()}` });
 
-            // Notice we attach the scriptId to the customId so the buttons know which script they belong to
             const row = new ActionRowBuilder().addComponents(
                 new ButtonBuilder().setCustomId(`panel_redeem_${scriptId}`).setLabel('Redeem Key').setEmoji('🗝️').setStyle(ButtonStyle.Success),
                 new ButtonBuilder().setCustomId(`panel_script_${scriptId}`).setLabel('Get Script').setEmoji('📜').setStyle(ButtonStyle.Primary),
@@ -165,7 +194,7 @@ client.on('interactionCreate', async interaction => {
             const action = parts[1];
             const scriptId = parts[2];
 
-            // 1. REDEEM KEY (Opens the Modal)
+            // 1. REDEEM KEY
             if (action === 'redeem') {
                 const modal = new ModalBuilder()
                     .setCustomId(`modal_redeem_${scriptId}`)
@@ -182,7 +211,7 @@ client.on('interactionCreate', async interaction => {
                 return interaction.showModal(modal);
             }
 
-            // For all other buttons, check if they have a valid key for this script
+            // Check if they have a key
             const { data: userKeys } = await supabase.from('script_keys').select('*')
                 .eq('script_id', scriptId)
                 .eq('discord_id', interaction.user.id)
@@ -213,7 +242,7 @@ client.on('interactionCreate', async interaction => {
                     await interaction.member.roles.add(script.buyer_role_id);
                     interaction.reply({ content: "✅ Role successfully given!", ephemeral: true });
                 } catch (err) {
-                    interaction.reply({ content: "❌ Failed to give role. The bot needs `Manage Roles` permission.", ephemeral: true });
+                    interaction.reply({ content: "❌ Failed to give role. The bot needs `Manage Roles` permission and its role must be above the buyer role.", ephemeral: true });
                 }
             }
 
@@ -260,7 +289,6 @@ client.on('interactionCreate', async interaction => {
             const scriptId = interaction.customId.split('_')[2];
             const inputKey = interaction.fields.getTextInputValue('key_input').trim();
 
-            // 1. Check if key exists and belongs to this script
             const { data: keyData } = await supabase.from('script_keys').select('*').eq('key', inputKey).eq('script_id', scriptId).limit(1);
 
             if (!keyData || keyData.length === 0) {
@@ -269,15 +297,12 @@ client.on('interactionCreate', async interaction => {
 
             const key = keyData[0];
 
-            // 2. Check if someone else already redeemed it
             if (key.discord_id && key.discord_id !== interaction.user.id) {
                 return interaction.reply({ content: "❌ This key has already been redeemed by someone else.", ephemeral: true });
             }
 
-            // 3. Save the discord ID to the key
             await supabase.from('script_keys').update({ discord_id: interaction.user.id }).eq('key', inputKey);
 
-            // 4. Give them the buyer role instantly
             const { data: script } = await supabase.from('scripts').select('buyer_role_id').eq('id', scriptId).single();
             if (script.buyer_role_id) {
                 try { await interaction.member.roles.add(script.buyer_role_id); } catch(err) {}
