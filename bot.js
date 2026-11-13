@@ -38,6 +38,10 @@ const commands = [
         .setDescription('Link your Luarix API Key to your Discord account')
         .addStringOption(opt => opt.setName('api_key').setDescription('Your LXR-... API Key').setRequired(true))
         .addRoleOption(opt => opt.setName('manager_role').setDescription('The role allowed to manage keys').setRequired(false)),
+    // NEW: UNLINK COMMAND
+    new SlashCommandBuilder()
+        .setName('unlink')
+        .setDescription('Unlink your Luarix API Key from your Discord account'),
     new SlashCommandBuilder()
         .setName('createkey')
         .setDescription('Generate a new script key')
@@ -116,6 +120,20 @@ client.on('interactionCreate', async interaction => {
                 await supabase.from('users').insert({ api_key: apiKey, discord_id: interaction.user.id, manager_role_id: roleId, email: `discord_${interaction.user.id}@luarix.com` });
                 return interaction.reply({ content: `✅ Created new account and linked to API Key \`${apiKey}\`.`, ephemeral: true });
             }
+        }
+
+        // NEW: UNLINK COMMAND
+        if (interaction.commandName === 'unlink') {
+            const { data: users, error: fetchErr } = await supabase.from('users').select('api_key').eq('discord_id', interaction.user.id);
+            
+            if (fetchErr) return interaction.reply({ content: "Database error.", ephemeral: true });
+            if (!users || users.length === 0) return interaction.reply({ content: "❌ Your Discord account is not linked to any Luarix account.", ephemeral: true });
+
+            const { error: updateErr } = await supabase.from('users').update({ discord_id: null }).eq('discord_id', interaction.user.id);
+            
+            if (updateErr) return interaction.reply({ content: "❌ Failed to unlink. Please try again later.", ephemeral: true });
+
+            return interaction.reply({ content: `✅ Successfully unlinked your Discord account.\nYou must use \`/link\` again to manage your projects.`, ephemeral: true });
         }
 
         if (interaction.commandName === 'createkey') {
@@ -200,7 +218,6 @@ client.on('interactionCreate', async interaction => {
             interaction.reply({ content: "✅ User blacklisted successfully.", ephemeral: true });
         }
 
-        // FIXED: /MASSWHITELIST COMMAND
         if (interaction.commandName === 'masswhitelist') {
             const targetRole = interaction.options.getRole('role');
             const scriptId = interaction.options.getString('project');
@@ -208,11 +225,7 @@ client.on('interactionCreate', async interaction => {
             const expiresAt = calculateExpiry(days);
 
             if (scriptId === "none" || expiresAt === undefined) return interaction.reply({ content: "❌ Invalid project or days.", ephemeral: true });
-
-            // Safety check: Prevent mass whitelisting @everyone
-            if (targetRole.id === interaction.guild.id) {
-                return interaction.reply({ content: "❌ You cannot mass-whitelist the `@everyone` role. Please select a specific role like `@Buyer`.", ephemeral: true });
-            }
+            if (targetRole.id === interaction.guild.id) return interaction.reply({ content: "❌ You cannot mass-whitelist the `@everyone` role. Please select a specific role.", ephemeral: true });
 
             const { data: users } = await supabase.from('users').select('api_key, manager_role_id, discord_id').eq('discord_id', interaction.user.id).limit(1);
             const { data: script } = await supabase.from('scripts').select('api_key, name').eq('id', scriptId).limit(1);
@@ -222,20 +235,15 @@ client.on('interactionCreate', async interaction => {
             const isOwner = users && users.length > 0 && script[0].api_key === users[0].api_key;
             const hasManagerRole = users && users.length > 0 && users[0].manager_role_id && interaction.member.roles.cache.has(users[0].manager_role_id);
 
-            if (!isOwner && !hasManagerRole) {
-                return interaction.reply({ content: "❌ You must be the project owner or have the Manager role to use this.", ephemeral: true });
-            }
+            if (!isOwner && !hasManagerRole) return interaction.reply({ content: "❌ You must be the project owner or have the Manager role to use this.", ephemeral: true });
 
             await interaction.deferReply({ ephemeral: true });
 
             try {
-                // Fetch all members and manually filter to be 100% sure
                 const allMembers = await interaction.guild.members.fetch();
                 const membersWithRole = allMembers.filter(member => member.roles.cache.has(targetRole.id));
                 
-                if (membersWithRole.size === 0) {
-                    return interaction.editReply({ content: `❌ No members found with the role **${targetRole.name}**.` });
-                }
+                if (membersWithRole.size === 0) return interaction.editReply({ content: `❌ No members found with the role **${targetRole.name}**.` });
 
                 const whitelistData = membersWithRole.map(member => ({
                     discord_id: member.id,
@@ -246,9 +254,7 @@ client.on('interactionCreate', async interaction => {
                 const { error } = await supabase.from('whitelists').insert(whitelistData);
                 if (error) throw error;
 
-                interaction.editReply({ 
-                    content: `✅ Successfully mass-whitelisted **${membersWithRole.size}** users with the **${targetRole.name}** role for the project **${script[0].name}**!` 
-                });
+                interaction.editReply({ content: `✅ Successfully mass-whitelisted **${membersWithRole.size}** users with the **${targetRole.name}** role for the project **${script[0].name}**!` });
             } catch (err) {
                 interaction.editReply({ content: `❌ An error occurred: ${err.message}` });
             }
@@ -289,7 +295,6 @@ client.on('interactionCreate', async interaction => {
 
             if (activeBlacklist) {
                 const banMsg = `You are blacklisted from this project with the reason:\n\`\`\`\n${activeBlacklist.reason}\n\`\`\`\n⚠️ This ban will expire **${activeBlacklist.expires_at ? new Date(activeBlacklist.expires_at).toLocaleDateString() : 'Never'}**`;
-                
                 if (action === 'script') return interaction.reply({ embeds: [new EmbedBuilder().setTitle('Unable to send script').setColor(0xef4444).setDescription(banMsg)], ephemeral: true });
                 if (action === 'role') return interaction.reply({ embeds: [new EmbedBuilder().setTitle('Unable to give role').setColor(0xef4444).setDescription(banMsg)], ephemeral: true });
                 if (action === 'reset') return interaction.reply({ embeds: [new EmbedBuilder().setTitle('Unable to reset HWID!').setColor(0xef4444).setDescription(`User is temporarily blacklisted, try again later.`)], ephemeral: true });
@@ -305,10 +310,7 @@ client.on('interactionCreate', async interaction => {
 
             if (action === 'script') {
                 if (!userKey && !isWhitelisted) {
-                    return interaction.reply({ 
-                        embeds: [new EmbedBuilder().setTitle('Not whitelisted!').setColor(0xef4444).setDescription(`You need to be whitelisted to get this script.\nIf you have a script key, click on the **Redeem** button below to redeem it.`)], 
-                        ephemeral: true 
-                    });
+                    return interaction.reply({ embeds: [new EmbedBuilder().setTitle('Not whitelisted!').setColor(0xef4444).setDescription(`You need to be whitelisted to get this script.\nIf you have a script key, click on the **Redeem** button below to redeem it.`)], ephemeral: true });
                 }
                 
                 let finalKey = userKey ? userKey.key : null;
@@ -317,7 +319,7 @@ client.on('interactionCreate', async interaction => {
                     await supabase.from('script_keys').insert({ key: finalKey, script_id: scriptId, discord_id: interaction.user.id, expires_at: null });
                 }
 
-                const loader = `script_key="${finalKey}"; loadstring(game:HttpGet("https://luarix-eight.vercel.app/api/loader?id=${scriptId}"))()`;
+                const loader = `script_key="${finalKey}"; loadstring(game:HttpGet("https://getluarix.vercel.app/api/loader?id=${scriptId}"))()`;
                 return interaction.reply({ content: `Here is your loader for **${script.name}**:\n\`\`\`lua\n${loader}\n\`\`\``, ephemeral: true });
             }
 
