@@ -15,7 +15,7 @@ app.listen(process.env.PORT || 3000, () => console.log('Web server running.'));
 const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_KEY);
 const client = new Client({ intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMembers] });
 
-// ✅ NEW: 32-char alphanumeric key generator (Luarmor-level)
+// ✅ 32-char alphanumeric key generator (Luarmor-level)
 function genScriptKey() {
     const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
     let key = '';
@@ -42,7 +42,8 @@ const commands = [
     new SlashCommandBuilder().setName('masswhitelist').setDescription('Whitelist everyone with a role').addRoleOption(opt => opt.setName('role').setDescription('Role to whitelist').setRequired(true)).addStringOption(opt => opt.setName('project').setDescription('Select project').setRequired(true).setAutocomplete(true)).addStringOption(opt => opt.setName('days').setDescription('Days or "forever"').setRequired(true))
 ].map(cmd => cmd.toJSON());
 
-client.once('ready', async () => {
+// ✅ Changed ready to clientReady to fix deprecation warning
+client.once('clientReady', async () => {
     console.log(`Logged in as ${client.user.tag}!`);
     const rest = new REST({ version: '10' }).setToken(process.env.DISCORD_TOKEN);
     try {
@@ -99,63 +100,84 @@ client.on('interactionCreate', async interaction => {
             if (!scripts || scripts.length === 0) return interaction.reply({ content: "You don't have any projects.", ephemeral: true });
 
             const selectMenu = new StringSelectMenuBuilder().setCustomId(`createkey_select_${days}`).setPlaceholder('Select a project').addOptions(scripts.map(s => ({ label: s.name, value: s.id })));
-            interaction.reply({ content: '👇 **Select the project:**', components: [new ActionRowBuilder().addComponents(selectMenu)], ephemeral: true });
+            return interaction.reply({ content: '👇 **Select the project:**', components: [new ActionRowBuilder().addComponents(selectMenu)], ephemeral: true });
         }
 
         if (interaction.commandName === 'setpanel') {
-            const scriptId = interaction.options.getString('project');
-            const buyerRole = interaction.options.getRole('buyer_role');
-            if (scriptId === "none") return interaction.reply({ content: "Please select a valid project.", ephemeral: true });
+            // ✅ Defer reply lagaya taaki 3 sec ka timeout na aaye
+            await interaction.deferReply({ ephemeral: true }); 
+            
+            try {
+                const scriptId = interaction.options.getString('project');
+                const buyerRole = interaction.options.getRole('buyer_role');
+                if (scriptId === "none" || !buyerRole) return interaction.editReply({ content: "❌ Please select a valid project and role." });
 
-            await supabase.from('scripts').update({ buyer_role_id: buyerRole.id, panel_channel_id: interaction.channel.id }).eq('id', scriptId);
-            const { data: script } = await supabase.from('scripts').select('name').eq('id', scriptId).single();
+                const { error: updateErr } = await supabase.from('scripts').update({ buyer_role_id: buyerRole.id, panel_channel_id: interaction.channel.id }).eq('id', scriptId);
+                if (updateErr) throw updateErr;
 
-            const embed = new EmbedBuilder()
-                .setTitle(`${script.name} Control Panel`)
-                .setDescription(`This control panel is for the project: **${script.name}**\nIf you're a buyer, click on the buttons below to redeem your key, get the script or get your role.`)
-                .setColor(0xf5c518).setFooter({ text: `Sent by ${interaction.user.username}` });
+                const { data: script, error: fetchErr } = await supabase.from('scripts').select('name').eq('id', scriptId).single();
+                if (fetchErr || !script) throw new Error("Script not found in database.");
 
-            const row = new ActionRowBuilder().addComponents(
-                new ButtonBuilder().setCustomId(`panel_redeem_${scriptId}`).setLabel('Redeem Key').setEmoji('🗝️').setStyle(ButtonStyle.Success),
-                new ButtonBuilder().setCustomId(`panel_script_${scriptId}`).setLabel('Get Script').setEmoji('📜').setStyle(ButtonStyle.Primary),
-                new ButtonBuilder().setCustomId(`panel_role_${scriptId}`).setLabel('Get Role').setEmoji('👤').setStyle(ButtonStyle.Primary),
-                new ButtonBuilder().setCustomId(`panel_reset_${scriptId}`).setLabel('Reset HWID').setEmoji('⚙️').setStyle(ButtonStyle.Secondary),
-                new ButtonBuilder().setCustomId(`panel_stats_${scriptId}`).setLabel('Get Stats').setEmoji('📊').setStyle(ButtonStyle.Secondary)
-            );
+                const embed = new EmbedBuilder()
+                    .setTitle(`${script.name} Control Panel`)
+                    .setDescription(`This control panel is for the project: **${script.name}**\nIf you're a buyer, click on the buttons below to redeem your key, get the script or get your role.`)
+                    .setColor(0xf5c518).setFooter({ text: `Sent by ${interaction.user.username}` });
 
-            await interaction.channel.send({ embeds: [embed], components: [row] });
-            interaction.reply({ content: "✅ Panel successfully created!", ephemeral: true });
+                const row = new ActionRowBuilder().addComponents(
+                    new ButtonBuilder().setCustomId(`panel_redeem_${scriptId}`).setLabel('Redeem Key').setEmoji('🗝️').setStyle(ButtonStyle.Success),
+                    new ButtonBuilder().setCustomId(`panel_script_${scriptId}`).setLabel('Get Script').setEmoji('📜').setStyle(ButtonStyle.Primary),
+                    new ButtonBuilder().setCustomId(`panel_role_${scriptId}`).setLabel('Get Role').setEmoji('👤').setStyle(ButtonStyle.Primary),
+                    new ButtonBuilder().setCustomId(`panel_reset_${scriptId}`).setLabel('Reset HWID').setEmoji('⚙️').setStyle(ButtonStyle.Secondary),
+                    new ButtonBuilder().setCustomId(`panel_stats_${scriptId}`).setLabel('Get Stats').setEmoji('📊').setStyle(ButtonStyle.Secondary)
+                );
+
+                await interaction.channel.send({ embeds: [embed], components: [row] });
+                return interaction.editReply({ content: "✅ Panel successfully created!" });
+            } catch (err) {
+                console.error("Setpanel Error:", err);
+                return interaction.editReply({ content: `❌ Error creating panel: ${err.message || "Check bot permissions or database."}` });
+            }
         }
 
         if (interaction.commandName === 'whitelist') {
-            const targetUser = interaction.options.getUser('user');
-            const scriptId = interaction.options.getString('project');
-            const days = interaction.options.getString('days');
-            const expiresAt = calculateExpiry(days);
-            if (scriptId === "none" || expiresAt === undefined) return interaction.reply({ content: "❌ Invalid project or days.", ephemeral: true });
+            await interaction.deferReply({ ephemeral: true }); // ✅ Added defer
+            try {
+                const targetUser = interaction.options.getUser('user');
+                const scriptId = interaction.options.getString('project');
+                const days = interaction.options.getString('days');
+                const expiresAt = calculateExpiry(days);
+                if (scriptId === "none" || expiresAt === undefined) return interaction.editReply({ content: "❌ Invalid project or days." });
 
-            const { data: scriptData } = await supabase.from('scripts').select('panel_channel_id').eq('id', scriptId).single();
-            const panelChannel = scriptData?.panel_channel_id ? `<#${scriptData.panel_channel_id}>` : "the panel channel";
+                const { data: scriptData } = await supabase.from('scripts').select('panel_channel_id').eq('id', scriptId).single();
+                const panelChannel = scriptData?.panel_channel_id ? `<#${scriptData.panel_channel_id}>` : "the panel channel";
 
-            await supabase.from('whitelists').insert({ discord_id: targetUser.id, script_id: scriptId, expires_at: expiresAt });
-            await interaction.channel.send(`<@${targetUser.id}> You have been whitelisted!\nYou can access the script via this message --> ${panelChannel}`);
-            interaction.reply({ content: "✅ User whitelisted successfully.", ephemeral: true });
+                await supabase.from('whitelists').insert({ discord_id: targetUser.id, script_id: scriptId, expires_at: expiresAt });
+                await interaction.channel.send(`<@${targetUser.id}> You have been whitelisted!\nYou can access the script via this message --> ${panelChannel}`);
+                return interaction.editReply({ content: "✅ User whitelisted successfully." });
+            } catch (e) {
+                return interaction.editReply({ content: `❌ Error: ${e.message}` });
+            }
         }
 
         if (interaction.commandName === 'blacklist') {
-            const targetUser = interaction.options.getUser('user');
-            const scriptId = interaction.options.getString('project');
-            const reason = interaction.options.getString('reason');
-            const days = interaction.options.getString('days');
-            const expiresAt = calculateExpiry(days);
-            if (scriptId === "none" || expiresAt === undefined) return interaction.reply({ content: "❌ Invalid project or days.", ephemeral: true });
+            await interaction.deferReply({ ephemeral: true }); // ✅ Added defer
+            try {
+                const targetUser = interaction.options.getUser('user');
+                const scriptId = interaction.options.getString('project');
+                const reason = interaction.options.getString('reason');
+                const days = interaction.options.getString('days');
+                const expiresAt = calculateExpiry(days);
+                if (scriptId === "none" || expiresAt === undefined) return interaction.editReply({ content: "❌ Invalid project or days." });
 
-            const { data: scriptData } = await supabase.from('scripts').select('panel_channel_id').eq('id', scriptId).single();
-            const panelChannel = scriptData?.panel_channel_id ? `<#${scriptData.panel_channel_id}>` : "the panel channel";
+                const { data: scriptData } = await supabase.from('scripts').select('panel_channel_id').eq('id', scriptId).single();
+                const panelChannel = scriptData?.panel_channel_id ? `<#${scriptData.panel_channel_id}>` : "the panel channel";
 
-            await supabase.from('blacklists').insert({ discord_id: targetUser.id, script_id: scriptId, reason: reason, expires_at: expiresAt });
-            await interaction.channel.send(`<@${targetUser.id}> You have been blacklisted! ⛔\nTo find out why, go to ${panelChannel} and click on **Stats** button`);
-            interaction.reply({ content: "✅ User blacklisted successfully.", ephemeral: true });
+                await supabase.from('blacklists').insert({ discord_id: targetUser.id, script_id: scriptId, reason: reason, expires_at: expiresAt });
+                await interaction.channel.send(`<@${targetUser.id}> You have been blacklisted! ⛔\nTo find out why, go to ${panelChannel} and click on **Stats** button`);
+                return interaction.editReply({ content: "✅ User blacklisted successfully." });
+            } catch (e) {
+                return interaction.editReply({ content: `❌ Error: ${e.message}` });
+            }
         }
 
         if (interaction.commandName === 'masswhitelist') {
@@ -174,8 +196,10 @@ client.on('interactionCreate', async interaction => {
 
                 const whitelistData = membersWithRole.map(member => ({ discord_id: member.id, script_id: scriptId, expires_at: expiresAt }));
                 await supabase.from('whitelists').insert(whitelistData);
-                interaction.editReply({ content: `✅ Successfully mass-whitelisted **${membersWithRole.size}** users!` });
-            } catch (err) { interaction.editReply({ content: `❌ Error: ${err.message}` }); }
+                return interaction.editReply({ content: `✅ Successfully mass-whitelisted **${membersWithRole.size}** users!` });
+            } catch (err) { 
+                return interaction.editReply({ content: `❌ Error: ${err.message}` }); 
+            }
         }
     }
 
@@ -184,13 +208,13 @@ client.on('interactionCreate', async interaction => {
         const expiresAt = calculateExpiry(days);
         const scriptId = interaction.values[0];
 
-        // ✅ CHANGED: 32-char alphanumeric key
+        // ✅ 32-char alphanumeric key
         const key = genScriptKey();
         await supabase.from('script_keys').insert({ key, script_id: scriptId, expires_at: expiresAt });
 
         const embed = new EmbedBuilder().setTitle('🔑 Key Generated').setColor(0xf5c518)
             .addFields({ name: 'Key', value: `\`${key}\`` }, { name: 'Expires In', value: expiresAt ? `${days} days` : 'Forever' });
-        interaction.update({ content: null, embeds: [embed], components: [] });
+        return interaction.update({ content: null, embeds: [embed], components: [] });
     }
 
     if (interaction.isButton()) {
@@ -201,7 +225,6 @@ client.on('interactionCreate', async interaction => {
 
             if (action === 'redeem') {
                 const modal = new ModalBuilder().setCustomId(`modal_redeem_${scriptId}`).setTitle('Redeem a key');
-                // ✅ CHANGED: placeholder updated
                 const keyInput = new TextInputBuilder().setCustomId('key_input').setLabel("Enter script key below:").setPlaceholder('Paste your 32-character key').setStyle(TextInputStyle.Short).setRequired(true);
                 modal.addComponents(new ActionRowBuilder().addComponents(keyInput));
                 return interaction.showModal(modal);
@@ -232,12 +255,10 @@ client.on('interactionCreate', async interaction => {
                 
                 let finalKey = userKey ? userKey.key : null;
                 if (!finalKey && isWhitelisted) {
-                    // ✅ CHANGED: 32-char alphanumeric key (was LXR-VIP-...)
                     finalKey = genScriptKey();
                     await supabase.from('script_keys').insert({ key: finalKey, script_id: scriptId, discord_id: interaction.user.id, expires_at: null });
                 }
 
-                // NEW DIRECT LOADER FORMAT
                 const loader = `script_key="${finalKey}";\nloadstring(game:HttpGet("https://getluarix.vercel.app/api/loader/${scriptId}"))()`;
                 return interaction.reply({ content: `Here is your loader for **${script.name}**:\n\`\`\`lua\n${loader}\n\`\`\``, ephemeral: true });
             }
@@ -248,8 +269,8 @@ client.on('interactionCreate', async interaction => {
 
                 try {
                     await interaction.member.roles.add(script.buyer_role_id);
-                    interaction.reply({ content: "✅ Role successfully given!", ephemeral: true });
-                } catch (err) { interaction.reply({ content: "❌ Failed to give role.", ephemeral: true }); }
+                    return interaction.reply({ content: "✅ Role successfully given!", ephemeral: true });
+                } catch (err) { return interaction.reply({ content: "❌ Failed to give role.", ephemeral: true }); }
             }
 
             if (action === 'reset') {
@@ -264,7 +285,7 @@ client.on('interactionCreate', async interaction => {
                 if (keyToReset) {
                     await supabase.from('script_keys').update({ hwid: null, resets: (userKey?.resets || 0) + 1, last_reset: new Date().toISOString() }).eq('key', keyToReset);
                 }
-                interaction.reply({ content: "✅ Your HWID has been successfully reset!", ephemeral: true });
+                return interaction.reply({ content: "✅ Your HWID has been successfully reset!", ephemeral: true });
             }
 
             if (action === 'stats') {
@@ -286,7 +307,7 @@ client.on('interactionCreate', async interaction => {
 **Expires At:** ${statsKey?.expires_at ? new Date(statsKey.expires_at).toLocaleDateString() : 'Forever'} 📅
 **Blacklisted:** ${isBanned}`).setFooter({ text: `Today at ${new Date().toLocaleTimeString()}` });
 
-                interaction.reply({ embeds: [embed], ephemeral: true });
+                return interaction.reply({ embeds: [embed], ephemeral: true });
             }
         }
     }
@@ -306,7 +327,7 @@ client.on('interactionCreate', async interaction => {
             const { data: script } = await supabase.from('scripts').select('buyer_role_id').eq('id', scriptId).single();
             if (script.buyer_role_id) { try { await interaction.member.roles.add(script.buyer_role_id); } catch(err) {} }
 
-            interaction.reply({ content: "✅ Successfully redeemed key! You now have access to the script.", ephemeral: true });
+            return interaction.reply({ content: "✅ Successfully redeemed key! You now have access to the script.", ephemeral: true });
         }
     }
 });
