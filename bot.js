@@ -225,7 +225,7 @@ client.on('interactionCreate', async interaction => {
                 }
 
                 // NEW DIRECT LOADER FORMAT
-                const loader = `local script_key = "${finalKey}"\nlocal hwid = game:GetService("RbxAnalyticsService"):GetClientId()\nloadstring(game:HttpGet("https://getluarix.vercel.app/api/loader?id=${scriptId}&key="..script_key.."&hwid="..hwid))()`;
+                const loader = `script_key="${finalKey}";\nloadstring(game:HttpGet("https://getluarix.vercel.app/api/loader/${scriptId}"))()`;
                 return interaction.reply({ content: `Here is your loader for **${script.name}**:\n\`\`\`lua\n${loader}\n\`\`\``, ephemeral: true });
             }
 
