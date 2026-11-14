@@ -138,7 +138,7 @@ client.on('interactionCreate', async interaction => {
             const panelChannel = scriptData?.panel_channel_id ? `<#${scriptData.panel_channel_id}>` : "the panel channel";
 
             await supabase.from('whitelists').insert({ discord_id: targetUser.id, script_id: scriptId, expires_at: expiresAt });
-            await interaction.channel.send(`<@${targetUser.id}> **You have been whitelisted!**\nYou can access the script via this message --> ${panelChannel}`);
+            await interaction.channel.send(`<@${targetUser.id}> You have been whitelisted!\nYou can access the script via this message --> ${panelChannel}`);
             interaction.reply({ content: "✅ User whitelisted successfully.", ephemeral: true });
         }
 
@@ -154,7 +154,7 @@ client.on('interactionCreate', async interaction => {
             const panelChannel = scriptData?.panel_channel_id ? `<#${scriptData.panel_channel_id}>` : "the panel channel";
 
             await supabase.from('blacklists').insert({ discord_id: targetUser.id, script_id: scriptId, reason: reason, expires_at: expiresAt });
-            await interaction.channel.send(`<@${targetUser.id}> **You have been blacklisted!** ⛔\nTo find out why, go to ${panelChannel} and click on **Stats** button`);
+            await interaction.channel.send(`<@${targetUser.id}> You have been blacklisted! ⛔\nTo find out why, go to ${panelChannel} and click on **Stats** button`);
             interaction.reply({ content: "✅ User blacklisted successfully.", ephemeral: true });
         }
 
