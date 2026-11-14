@@ -15,6 +15,16 @@ app.listen(process.env.PORT || 3000, () => console.log('Web server running.'));
 const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_KEY);
 const client = new Client({ intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMembers] });
 
+// ✅ NEW: 32-char alphanumeric key generator (Luarmor-level)
+function genScriptKey() {
+    const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
+    let key = '';
+    for (let i = 0; i < 32; i++) {
+        key += chars[crypto.randomInt(0, chars.length)];
+    }
+    return key;
+}
+
 function calculateExpiry(daysInput) {
     if (daysInput.toLowerCase() === 'forever') return null;
     const days = parseInt(daysInput);
@@ -174,7 +184,8 @@ client.on('interactionCreate', async interaction => {
         const expiresAt = calculateExpiry(days);
         const scriptId = interaction.values[0];
 
-        const key = "LXR-KEY-" + crypto.randomBytes(4).toString('hex').toUpperCase();
+        // ✅ CHANGED: 32-char alphanumeric key
+        const key = genScriptKey();
         await supabase.from('script_keys').insert({ key, script_id: scriptId, expires_at: expiresAt });
 
         const embed = new EmbedBuilder().setTitle('🔑 Key Generated').setColor(0xf5c518)
@@ -190,7 +201,8 @@ client.on('interactionCreate', async interaction => {
 
             if (action === 'redeem') {
                 const modal = new ModalBuilder().setCustomId(`modal_redeem_${scriptId}`).setTitle('Redeem a key');
-                const keyInput = new TextInputBuilder().setCustomId('key_input').setLabel("Enter script key below:").setPlaceholder('LXR-KEY-...').setStyle(TextInputStyle.Short).setRequired(true);
+                // ✅ CHANGED: placeholder updated
+                const keyInput = new TextInputBuilder().setCustomId('key_input').setLabel("Enter script key below:").setPlaceholder('Paste your 32-character key').setStyle(TextInputStyle.Short).setRequired(true);
                 modal.addComponents(new ActionRowBuilder().addComponents(keyInput));
                 return interaction.showModal(modal);
             }
@@ -220,7 +232,8 @@ client.on('interactionCreate', async interaction => {
                 
                 let finalKey = userKey ? userKey.key : null;
                 if (!finalKey && isWhitelisted) {
-                    finalKey = "LXR-VIP-" + crypto.randomBytes(4).toString('hex').toUpperCase();
+                    // ✅ CHANGED: 32-char alphanumeric key (was LXR-VIP-...)
+                    finalKey = genScriptKey();
                     await supabase.from('script_keys').insert({ key: finalKey, script_id: scriptId, discord_id: interaction.user.id, expires_at: null });
                 }
 
