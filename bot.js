@@ -264,13 +264,49 @@ client.on('interactionCreate', async interaction => {
             }
 
             if (action === 'role') {
-                if (!userKey && !isWhitelisted) return interaction.reply({ content: "You need to redeem a key or be whitelisted first!", ephemeral: true });
-                if (!script.buyer_role_id) return interaction.reply({ content: "The owner hasn't set a buyer role.", ephemeral: true });
+                if (!userKey && !isWhitelisted) {
+                    return interaction.reply({ content: "You need to redeem a key or be whitelisted first!", ephemeral: true });
+                }
+                if (!script || !script.buyer_role_id) {
+                    return interaction.reply({ content: "The owner hasn't set a buyer role for this project. Re-run /setpanel and choose a Buyer Role.", ephemeral: true });
+                }
 
                 try {
-                    await interaction.member.roles.add(script.buyer_role_id);
-                    return interaction.reply({ content: "✅ Role successfully given!", ephemeral: true });
-                } catch (err) { return interaction.reply({ content: "❌ Failed to give role.", ephemeral: true }); }
+                    // Make sure we have a full GuildMember
+                    let member = interaction.member;
+                    if (!member || !member.roles) {
+                        member = await interaction.guild.members.fetch(interaction.user.id);
+                    }
+
+                    const role = interaction.guild.roles.cache.get(script.buyer_role_id)
+                        || await interaction.guild.roles.fetch(script.buyer_role_id).catch(() => null);
+
+                    if (!role) {
+                        return interaction.reply({ content: "❌ The buyer role no longer exists. Owner must re-run /setpanel.", ephemeral: true });
+                    }
+
+                    // Check hierarchy
+                    const botMember = interaction.guild.members.me || await interaction.guild.members.fetchMe();
+                    if (role.position >= botMember.roles.highest.position) {
+                        return interaction.reply({
+                            content: "❌ Bot cannot give this role because it is higher than (or equal to) the bot's highest role.\nMove the **Luarix** role **above** the buyer role in Server Settings → Roles.",
+                            ephemeral: true
+                        });
+                    }
+
+                    if (member.roles.cache.has(role.id)) {
+                        return interaction.reply({ content: "✅ You already have the buyer role.", ephemeral: true });
+                    }
+
+                    await member.roles.add(role.id);
+                    return interaction.reply({ content: `✅ Role **${role.name}** given successfully!`, ephemeral: true });
+                } catch (err) {
+                    console.error("Give role error:", err);
+                    return interaction.reply({
+                        content: `❌ Failed to give role: ${err.message || "Unknown error"}\nMake sure the bot has **Manage Roles** permission and its role is above the buyer role.`,
+                        ephemeral: true
+                    });
+                }
             }
 
             if (action === 'reset') {
@@ -324,10 +360,24 @@ client.on('interactionCreate', async interaction => {
             if (key.discord_id && key.discord_id !== interaction.user.id) return interaction.reply({ content: "❌ This key has already been redeemed.", ephemeral: true });
 
             await supabase.from('script_keys').update({ discord_id: interaction.user.id }).eq('key', inputKey);
-            const { data: script } = await supabase.from('scripts').select('buyer_role_id').eq('id', scriptId).single();
-            if (script.buyer_role_id) { try { await interaction.member.roles.add(script.buyer_role_id); } catch(err) {} }
+            
+            let roleMsg = "";
+            try {
+                const { data: script } = await supabase.from('scripts').select('buyer_role_id').eq('id', scriptId).single();
+                if (script && script.buyer_role_id) {
+                    let member = interaction.member;
+                    if (!member || !member.roles) {
+                        member = await interaction.guild.members.fetch(interaction.user.id);
+                    }
+                    await member.roles.add(script.buyer_role_id);
+                    roleMsg = " Buyer role has also been given.";
+                }
+            } catch (err) {
+                console.error("Auto role on redeem failed:", err.message);
+                roleMsg = " (Could not auto-give role — use Get Role button or check bot permissions.)";
+            }
 
-            return interaction.reply({ content: "✅ Successfully redeemed key! You now have access to the script.", ephemeral: true });
+            return interaction.reply({ content: "✅ Successfully redeemed key! You now have access to the script." + roleMsg, ephemeral: true });
         }
     }
 });
