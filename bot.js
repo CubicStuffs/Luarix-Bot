@@ -15,7 +15,6 @@ app.listen(process.env.PORT || 3000, () => console.log('Web server running.'));
 const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_KEY);
 const client = new Client({ intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMembers] });
 
-// 32-char alphanumeric key generator
 function genScriptKey() {
     const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
     let key = '';
@@ -32,7 +31,6 @@ function calculateExpiry(daysInput) {
     return new Date(Date.now() + days * 86400000).toISOString();
 }
 
-// ========== HELPER: Get guild link ==========
 async function getGuildLink(guildId) {
     const { data, error } = await supabase
         .from('guild_links')
@@ -43,7 +41,6 @@ async function getGuildLink(guildId) {
     return data[0];
 }
 
-// ========== HELPER: Check if user is manager in this guild ==========
 async function isManager(interaction) {
     const guildId = interaction.guild?.id;
     if (!guildId) return false;
@@ -51,10 +48,8 @@ async function isManager(interaction) {
     const link = await getGuildLink(guildId);
     if (!link) return false;
 
-    // Linked by this user?
     if (link.linked_by === interaction.user.id) return true;
 
-    // Has manager role?
     if (link.manager_role_id) {
         const member = interaction.member;
         if (member && member.roles.cache.has(link.manager_role_id)) return true;
@@ -137,7 +132,6 @@ client.on('interactionCreate', async (interaction) => {
                     return interaction.respond([{ name: "❌ Please /link an API key in this server first", value: "none" }]);
                 }
 
-                // Only managers can see projects
                 const manager = await isManager(interaction);
                 if (!manager) {
                     return interaction.respond([{ name: "❌ You need manager permission", value: "none" }]);
@@ -165,7 +159,7 @@ client.on('interactionCreate', async (interaction) => {
         // ==================== SLASH COMMANDS ====================
         if (interaction.isChatInputCommand()) {
 
-            // ---------- /link ----------
+            // /link
             if (interaction.commandName === 'link') {
                 const apiKey = interaction.options.getString('api_key');
                 const roleId = interaction.options.getRole('manager_role')?.id || null;
@@ -175,13 +169,11 @@ client.on('interactionCreate', async (interaction) => {
                     return interaction.reply({ content: "❌ This command can only be used in a server.", ephemeral: true });
                 }
 
-                // Check if API key exists in users table
                 const { data: users } = await supabase.from('users').select('*').eq('api_key', apiKey).limit(1);
                 if (!users || users.length === 0) {
                     return interaction.reply({ content: "❌ Invalid API Key. Make sure it exists on the Luarix dashboard.", ephemeral: true });
                 }
 
-                // Upsert guild link
                 const { data: existing } = await supabase
                     .from('guild_links')
                     .select('*')
@@ -212,7 +204,7 @@ client.on('interactionCreate', async (interaction) => {
                 });
             }
 
-            // ---------- /unlink ----------
+            // /unlink
             if (interaction.commandName === 'unlink') {
                 const guildId = interaction.guild?.id;
                 if (!guildId) {
@@ -224,7 +216,6 @@ client.on('interactionCreate', async (interaction) => {
                     return interaction.reply({ content: "❌ No API key is linked to this server.", ephemeral: true });
                 }
 
-                // Only the person who linked it can unlink (or you can allow managers too)
                 if (link.linked_by !== interaction.user.id) {
                     return interaction.reply({ content: "❌ Only the person who linked the key can unlink it.", ephemeral: true });
                 }
@@ -233,7 +224,7 @@ client.on('interactionCreate', async (interaction) => {
                 return interaction.reply({ content: "✅ Successfully unlinked the API key from this server.", ephemeral: true });
             }
 
-            // ---------- Helper: require manager + guild link ----------
+            // Helper
             async function requireManager() {
                 const guildId = interaction.guild?.id;
                 if (!guildId) {
@@ -256,7 +247,7 @@ client.on('interactionCreate', async (interaction) => {
                 return link;
             }
 
-            // ---------- /createkey ----------
+            // /createkey
             if (interaction.commandName === 'createkey') {
                 const link = await requireManager();
                 if (!link) return;
@@ -288,7 +279,7 @@ client.on('interactionCreate', async (interaction) => {
                 });
             }
 
-            // ---------- /setpanel ----------
+            // /setpanel
             if (interaction.commandName === 'setpanel') {
                 await interaction.deferReply({ ephemeral: true });
 
@@ -311,7 +302,6 @@ client.on('interactionCreate', async (interaction) => {
                         return interaction.editReply({ content: "❌ Please select a valid project and buyer role." });
                     }
 
-                    // Update manager role on the guild link if provided
                     if (managerRole) {
                         await supabase
                             .from('guild_links')
@@ -326,7 +316,7 @@ client.on('interactionCreate', async (interaction) => {
                             panel_channel_id: interaction.channel.id
                         })
                         .eq('id', scriptId)
-                        .eq('api_key', link.api_key); // safety: only own projects
+                        .eq('api_key', link.api_key);
 
                     if (updateErr) throw updateErr;
 
@@ -360,7 +350,7 @@ client.on('interactionCreate', async (interaction) => {
                 }
             }
 
-            // ---------- /whitelist ----------
+            // /whitelist
             if (interaction.commandName === 'whitelist') {
                 await interaction.deferReply({ ephemeral: true });
 
@@ -380,7 +370,6 @@ client.on('interactionCreate', async (interaction) => {
                         return interaction.editReply({ content: "❌ Invalid project or days." });
                     }
 
-                    // Safety: make sure the project belongs to this server's API key
                     const { data: scriptCheck } = await supabase
                         .from('scripts')
                         .select('id')
@@ -413,7 +402,7 @@ client.on('interactionCreate', async (interaction) => {
                 }
             }
 
-            // ---------- /blacklist ----------
+            // /blacklist
             if (interaction.commandName === 'blacklist') {
                 await interaction.deferReply({ ephemeral: true });
 
@@ -467,7 +456,7 @@ client.on('interactionCreate', async (interaction) => {
                 }
             }
 
-            // ---------- /masswhitelist ----------
+            // /masswhitelist
             if (interaction.commandName === 'masswhitelist') {
                 const link = await getGuildLink(interaction.guild?.id);
                 if (!link) {
@@ -492,7 +481,6 @@ client.on('interactionCreate', async (interaction) => {
                     return interaction.reply({ content: "❌ Cannot whitelist @everyone.", ephemeral: true });
                 }
 
-                // Safety check
                 const { data: scriptCheck } = await supabase
                     .from('scripts')
                     .select('id')
@@ -540,16 +528,25 @@ client.on('interactionCreate', async (interaction) => {
                 await supabase.from('script_keys').insert({
                     key: finalKey,
                     script_id: scriptId,
-                    discord_id: interaction.user.id,
                     expires_at: expiresAt
+                    // note: we do NOT set discord_id here so the key can be given to anyone
                 });
 
                 const { data: script } = await supabase.from('scripts').select('name').eq('id', scriptId).single();
 
-                const loader = `script_key="${finalKey}";\nloadstring(game:HttpGet("https://getluarix.vercel.app/api/loader/${scriptId}"))()`;
+                const embed = new EmbedBuilder()
+                    .setTitle('🔑 Key Generated')
+                    .setColor(0xf5c518)
+                    .addFields(
+                        { name: 'Project', value: script?.name || 'Unknown', inline: true },
+                        { name: 'Key', value: `\`${finalKey}\``, inline: false },
+                        { name: 'Expires', value: expiresAt ? `${days} days` : 'Forever', inline: true }
+                    )
+                    .setFooter({ text: 'Give this key to the buyer. They can redeem it in the panel.' });
 
                 return interaction.update({
-                    content: `Here is your loader for **${script?.name || 'Project'}**:\n\`\`\`lua\n${loader}\n\`\`\``,
+                    content: null,
+                    embeds: [embed],
                     components: []
                 });
             }
@@ -577,7 +574,6 @@ client.on('interactionCreate', async (interaction) => {
                     return interaction.showModal(modal);
                 }
 
-                // Defer for all other buttons
                 await interaction.deferReply({ ephemeral: true });
 
                 // Blacklist check
@@ -633,7 +629,7 @@ client.on('interactionCreate', async (interaction) => {
                             embeds: [new EmbedBuilder()
                                 .setTitle('Not whitelisted!')
                                 .setColor(0xef4444)
-                                .setDescription('You need to be whitelisted to get this script.\nIf you have a script key, click on the **Redeem** button below to redeem it.')
+                                .setDescription('You need to be whitelisted to get this script.\nIf you have a script key, click on the **Redeem** button to redeem it.')
                             ] 
                         });
                     }
@@ -646,7 +642,7 @@ client.on('interactionCreate', async (interaction) => {
                         embeds: [new EmbedBuilder()
                             .setTitle(`${script?.name || 'Script'} Loader`)
                             .setColor(0xf5c518)
-                            .setDescription(`\`\`\`lua\n${loader}\n\`\`\``)
+                            .setDescription('```lua\n' + loader + '\n```')
                         ]
                     });
                 }
