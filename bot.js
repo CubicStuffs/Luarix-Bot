@@ -529,7 +529,6 @@ client.on('interactionCreate', async (interaction) => {
                     key: finalKey,
                     script_id: scriptId,
                     expires_at: expiresAt
-                    // note: we do NOT set discord_id here so the key can be given to anyone
                 });
 
                 const { data: script } = await supabase.from('scripts').select('name').eq('id', scriptId).single();
@@ -622,44 +621,44 @@ client.on('interactionCreate', async (interaction) => {
                     .eq('id', scriptId)
                     .single();
 
-// ========== GET SCRIPT ==========
-if (action === 'script') {
-    if (!userKey && !isWhitelisted) {
-        return interaction.editReply({ 
-            embeds: [new EmbedBuilder()
-                .setTitle('Not whitelisted!')
-                .setColor(0xef4444)
-                .setDescription('You need to be whitelisted to get this script.\nIf you have a script key, click on the **Redeem** button to redeem it.')
-            ] 
-        });
-    }
+                // ========== GET SCRIPT (FIXED) ==========
+                if (action === 'script') {
+                    if (!userKey && !isWhitelisted) {
+                        return interaction.editReply({ 
+                            embeds: [new EmbedBuilder()
+                                .setTitle('Not whitelisted!')
+                                .setColor(0xef4444)
+                                .setDescription('You need to be whitelisted to get this script.\nIf you have a script key, click on the **Redeem** button to redeem it.')
+                            ] 
+                        });
+                    }
 
-    let finalKey = userKey ? userKey.key : null;
+                    let finalKey = userKey ? userKey.key : null;
 
-    // If user is whitelisted but has no key → create one automatically
-    if (!finalKey && isWhitelisted) {
-        finalKey = genScriptKey();
+                    // If user is whitelisted but has no key → create one automatically
+                    if (!finalKey && isWhitelisted) {
+                        finalKey = genScriptKey();
 
-        await supabase.from('script_keys').insert({
-            key: finalKey,
-            script_id: scriptId,
-            discord_id: interaction.user.id,
-            expires_at: null // forever
-        });
-    }
+                        await supabase.from('script_keys').insert({
+                            key: finalKey,
+                            script_id: scriptId,
+                            discord_id: interaction.user.id,
+                            expires_at: null // forever
+                        });
+                    }
 
-    const loader = finalKey
-        ? `script_key="${finalKey}";\nloadstring(game:HttpGet("https://getluarix.vercel.app/api/loader/${scriptId}"))()`
-        : `loadstring(game:HttpGet("https://getluarix.vercel.app/api/loader/${scriptId}"))()`;
+                    const loader = finalKey
+                        ? `script_key="${finalKey}";\nloadstring(game:HttpGet("https://getluarix.vercel.app/api/loader/${scriptId}"))()`
+                        : `loadstring(game:HttpGet("https://getluarix.vercel.app/api/loader/${scriptId}"))()`;
 
-    return interaction.editReply({
-        embeds: [new EmbedBuilder()
-            .setTitle(`${script?.name || 'Script'} Loader`)
-            .setColor(0xf5c518)
-            .setDescription('```lua\n' + loader + '\n```')
-        ]
-    });
-}
+                    return interaction.editReply({
+                        embeds: [new EmbedBuilder()
+                            .setTitle(`${script?.name || 'Script'} Loader`)
+                            .setColor(0xf5c518)
+                            .setDescription('```lua\n' + loader + '\n```')
+                        ]
+                    });
+                }
 
                 // ========== GET ROLE ==========
                 if (action === 'role') {
