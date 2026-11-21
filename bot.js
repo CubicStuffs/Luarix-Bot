@@ -555,10 +555,234 @@ client.on('interactionCreate', async (interaction) => {
             }
         }
 
-        // ==================== BUTTONS (Panel actions) ====================
-        // Keep your existing button handling logic here.
-        // I left the structure so you can paste your previous panel button code below if needed.
-        // The main permission & project scoping is already fixed above.
+        // ==================== BUTTONS ====================
+        if (interaction.isButton()) {
+            const parts = interaction.customId.split('_');
+            if (parts[0] === 'panel') {
+                const action = parts[1];
+                const scriptId = parts[2];
+
+                // Redeem → Modal
+                if (action === 'redeem') {
+                    const modal = new ModalBuilder()
+                        .setCustomId(`modal_redeem_${scriptId}`)
+                        .setTitle('Redeem a key');
+                    const keyInput = new TextInputBuilder()
+                        .setCustomId('key_input')
+                        .setLabel("Enter script key below:")
+                        .setPlaceholder('Paste your 32-character key')
+                        .setStyle(TextInputStyle.Short)
+                        .setRequired(true);
+                    modal.addComponents(new ActionRowBuilder().addComponents(keyInput));
+                    return interaction.showModal(modal);
+                }
+
+                // Defer for all other buttons
+                await interaction.deferReply({ ephemeral: true });
+
+                // Blacklist check
+                const { data: blacklists } = await supabase.from('blacklists')
+                    .select('*')
+                    .eq('discord_id', interaction.user.id)
+                    .eq('script_id', scriptId);
+                const activeBlacklist = blacklists?.find(b => !b.expires_at || new Date(b.expires_at) > new Date());
+
+                if (activeBlacklist) {
+                    const banMsg = `You are blacklisted from this project with the reason:\n\`\`\`\n${activeBlacklist.reason}\n\`\`\`\n⚠️ This ban will expire **${activeBlacklist.expires_at ? new Date(activeBlacklist.expires_at).toLocaleDateString() : 'Never'}**`;
+                    
+                    if (action === 'script') {
+                        return interaction.editReply({ 
+                            embeds: [new EmbedBuilder().setTitle('Unable to send script').setColor(0xef4444).setDescription(banMsg)] 
+                        });
+                    }
+                    if (action === 'role') {
+                        return interaction.editReply({ 
+                            embeds: [new EmbedBuilder().setTitle('Unable to give role').setColor(0xef4444).setDescription(banMsg)] 
+                        });
+                    }
+                    if (action === 'reset') {
+                        return interaction.editReply({ 
+                            embeds: [new EmbedBuilder().setTitle('Unable to reset HWID!').setColor(0xef4444).setDescription('User is temporarily blacklisted.')] 
+                        });
+                    }
+                }
+
+                // Key + whitelist check
+                const { data: userKeys } = await supabase.from('script_keys')
+                    .select('*')
+                    .eq('script_id', scriptId)
+                    .eq('discord_id', interaction.user.id)
+                    .limit(1);
+                const userKey = userKeys && userKeys.length > 0 ? userKeys[0] : null;
+
+                const { data: userWhitelists } = await supabase.from('whitelists')
+                    .select('*')
+                    .eq('script_id', scriptId)
+                    .eq('discord_id', interaction.user.id);
+                const isWhitelisted = userWhitelists && userWhitelists.some(w => !w.expires_at || new Date(w.expires_at) > new Date());
+
+                const { data: script } = await supabase.from('scripts')
+                    .select('buyer_role_id, name')
+                    .eq('id', scriptId)
+                    .single();
+
+                // ========== GET SCRIPT ==========
+                if (action === 'script') {
+                    if (!userKey && !isWhitelisted) {
+                        return interaction.editReply({ 
+                            embeds: [new EmbedBuilder()
+                                .setTitle('Not whitelisted!')
+                                .setColor(0xef4444)
+                                .setDescription('You need to be whitelisted to get this script.\nIf you have a script key, click on the **Redeem** button below to redeem it.')
+                            ] 
+                        });
+                    }
+
+                    const loader = userKey 
+                        ? `script_key="${userKey.key}";\nloadstring(game:HttpGet("https://getluarix.vercel.app/api/loader/${scriptId}"))()`
+                        : `loadstring(game:HttpGet("https://getluarix.vercel.app/api/loader/${scriptId}"))()`;
+
+                    return interaction.editReply({
+                        embeds: [new EmbedBuilder()
+                            .setTitle(`${script?.name || 'Script'} Loader`)
+                            .setColor(0xf5c518)
+                            .setDescription(`\`\`\`lua\n${loader}\n\`\`\``)
+                        ]
+                    });
+                }
+
+                // ========== GET ROLE ==========
+                if (action === 'role') {
+                    if (!userKey && !isWhitelisted) {
+                        return interaction.editReply({ content: "You need to redeem a key or be whitelisted first!" });
+                    }
+
+                    if (!script?.buyer_role_id) {
+                        return interaction.editReply({ content: "❌ No buyer role is set for this project." });
+                    }
+
+                    try {
+                        let member = interaction.member;
+                        if (!member || !member.roles) {
+                            member = await interaction.guild.members.fetch(interaction.user.id);
+                        }
+                        const role = interaction.guild.roles.cache.get(script.buyer_role_id);
+                        if (!role) {
+                            return interaction.editReply({ content: "❌ Buyer role not found in this server." });
+                        }
+                        await member.roles.add(role.id);
+                        return interaction.editReply({ content: `✅ Role **${role.name}** given successfully!` });
+                    } catch (err) {
+                        console.error("Give role error:", err);
+                        return interaction.editReply({
+                            content: `❌ Failed to give role: ${err.message || "Unknown error"}\nMake sure the bot has **Manage Roles** permission and its role is above the buyer role.`
+                        });
+                    }
+                }
+
+                // ========== RESET HWID ==========
+                if (action === 'reset') {
+                    if (!userKey && !isWhitelisted) {
+                        return interaction.editReply({ content: "You need to redeem a key first!" });
+                    }
+                    
+                    let keyToReset = userKey ? userKey.key : null;
+                    if (!keyToReset && isWhitelisted) {
+                        const { data: vipKey } = await supabase.from('script_keys')
+                            .select('key')
+                            .eq('script_id', scriptId)
+                            .eq('discord_id', interaction.user.id)
+                            .limit(1);
+                        if (vipKey && vipKey.length > 0) keyToReset = vipKey[0].key;
+                    }
+
+                    if (keyToReset) {
+                        await supabase.from('script_keys').update({ 
+                            hwid: null, 
+                            resets: (userKey?.resets || 0) + 1, 
+                            last_reset: new Date().toISOString() 
+                        }).eq('key', keyToReset);
+                    }
+                    return interaction.editReply({ content: "✅ Your HWID has been successfully reset!" });
+                }
+
+                // ========== GET STATS ==========
+                if (action === 'stats') {
+                    if (!userKey && !isWhitelisted) {
+                        return interaction.editReply({ content: "You need to redeem a key first!" });
+                    }
+
+                    let statsKey = userKey;
+                    if (!statsKey && isWhitelisted) {
+                        const { data: vipKey } = await supabase.from('script_keys')
+                            .select('*')
+                            .eq('script_id', scriptId)
+                            .eq('discord_id', interaction.user.id)
+                            .limit(1);
+                        if (vipKey && vipKey.length > 0) statsKey = vipKey[0];
+                    }
+
+                    const embed = new EmbedBuilder()
+                        .setTitle('📊 Your Stats')
+                        .setColor(0xf5c518)
+                        .addFields(
+                            { name: 'Key', value: statsKey ? `\`${statsKey.key}\`` : 'Whitelisted (no key)', inline: false },
+                            { name: 'HWID', value: statsKey?.hwid || 'Not set', inline: true },
+                            { name: 'Resets', value: String(statsKey?.resets || 0), inline: true },
+                            { name: 'Expires', value: statsKey?.expires_at ? new Date(statsKey.expires_at).toLocaleDateString() : 'Never', inline: true }
+                        )
+                        .setFooter({ text: `Today at ${new Date().toLocaleTimeString()}` });
+
+                    return interaction.editReply({ embeds: [embed] });
+                }
+            }
+        }
+
+        // ==================== MODAL SUBMIT ====================
+        if (interaction.isModalSubmit()) {
+            if (interaction.customId.startsWith('modal_redeem_')) {
+                const scriptId = interaction.customId.split('_')[2];
+                const inputKey = interaction.fields.getTextInputValue('key_input').trim();
+
+                const { data: keyData } = await supabase.from('script_keys')
+                    .select('*')
+                    .eq('key', inputKey)
+                    .eq('script_id', scriptId)
+                    .limit(1);
+                    
+                if (!keyData || keyData.length === 0) {
+                    return interaction.reply({ content: "❌ Invalid key for this project.", ephemeral: true });
+                }
+
+                const key = keyData[0];
+                if (key.discord_id && key.discord_id !== interaction.user.id) {
+                    return interaction.reply({ content: "❌ This key has already been redeemed.", ephemeral: true });
+                }
+
+                await supabase.from('script_keys').update({ discord_id: interaction.user.id }).eq('key', inputKey);
+                
+                let roleMsg = "";
+                try {
+                    const { data: script } = await supabase.from('scripts').select('buyer_role_id').eq('id', scriptId).single();
+                    if (script && script.buyer_role_id) {
+                        let member = interaction.member;
+                        if (!member || !member.roles) {
+                            member = await interaction.guild.members.fetch(interaction.user.id);
+                        }
+                        await member.roles.add(script.buyer_role_id);
+                        roleMsg = " Buyer role has also been given.";
+                    }
+                } catch (err) {
+                    console.error("Auto role on redeem failed:", err.message);
+                    roleMsg = " (Could not auto-give role — use Get Role button or check bot permissions.)";
+                }
+
+                return interaction.reply({ 
+                    content: "✅ Successfully redeemed key! You now have access to the script." + roleMsg, 
+                    ephemeral: true 
+                });
+            }
+        }
 
     } catch (err) {
         console.error("Interaction Error:", err);
