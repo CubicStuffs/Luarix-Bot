@@ -622,30 +622,44 @@ client.on('interactionCreate', async (interaction) => {
                     .eq('id', scriptId)
                     .single();
 
-                // ========== GET SCRIPT ==========
-                if (action === 'script') {
-                    if (!userKey && !isWhitelisted) {
-                        return interaction.editReply({ 
-                            embeds: [new EmbedBuilder()
-                                .setTitle('Not whitelisted!')
-                                .setColor(0xef4444)
-                                .setDescription('You need to be whitelisted to get this script.\nIf you have a script key, click on the **Redeem** button to redeem it.')
-                            ] 
-                        });
-                    }
+// ========== GET SCRIPT ==========
+if (action === 'script') {
+    if (!userKey && !isWhitelisted) {
+        return interaction.editReply({ 
+            embeds: [new EmbedBuilder()
+                .setTitle('Not whitelisted!')
+                .setColor(0xef4444)
+                .setDescription('You need to be whitelisted to get this script.\nIf you have a script key, click on the **Redeem** button to redeem it.')
+            ] 
+        });
+    }
 
-                    const loader = userKey 
-                        ? `script_key="${userKey.key}";\nloadstring(game:HttpGet("https://getluarix.vercel.app/api/loader/${scriptId}"))()`
-                        : `loadstring(game:HttpGet("https://getluarix.vercel.app/api/loader/${scriptId}"))()`;
+    let finalKey = userKey ? userKey.key : null;
 
-                    return interaction.editReply({
-                        embeds: [new EmbedBuilder()
-                            .setTitle(`${script?.name || 'Script'} Loader`)
-                            .setColor(0xf5c518)
-                            .setDescription('```lua\n' + loader + '\n```')
-                        ]
-                    });
-                }
+    // If user is whitelisted but has no key → create one automatically
+    if (!finalKey && isWhitelisted) {
+        finalKey = genScriptKey();
+
+        await supabase.from('script_keys').insert({
+            key: finalKey,
+            script_id: scriptId,
+            discord_id: interaction.user.id,
+            expires_at: null // forever
+        });
+    }
+
+    const loader = finalKey
+        ? `script_key="${finalKey}";\nloadstring(game:HttpGet("https://getluarix.vercel.app/api/loader/${scriptId}"))()`
+        : `loadstring(game:HttpGet("https://getluarix.vercel.app/api/loader/${scriptId}"))()`;
+
+    return interaction.editReply({
+        embeds: [new EmbedBuilder()
+            .setTitle(`${script?.name || 'Script'} Loader`)
+            .setColor(0xf5c518)
+            .setDescription('```lua\n' + loader + '\n```')
+        ]
+    });
+}
 
                 // ========== GET ROLE ==========
                 if (action === 'role') {
