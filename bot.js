@@ -334,12 +334,33 @@ client.on('interactionCreate', async (interaction) => {
                         .setColor(0xf5c518)
                         .setFooter({ text: `Sent by ${interaction.user.username}` });
 
+                    // Nice looking buttons with emojis (like old version)
                     const row = new ActionRowBuilder().addComponents(
-                        new ButtonBuilder().setCustomId(`panel_redeem_${scriptId}`).setLabel('Redeem').setStyle(ButtonStyle.Success),
-                        new ButtonBuilder().setCustomId(`panel_script_${scriptId}`).setLabel('Get Script').setStyle(ButtonStyle.Primary),
-                        new ButtonBuilder().setCustomId(`panel_role_${scriptId}`).setLabel('Get Role').setStyle(ButtonStyle.Secondary),
-                        new ButtonBuilder().setCustomId(`panel_stats_${scriptId}`).setLabel('Stats').setStyle(ButtonStyle.Secondary),
-                        new ButtonBuilder().setCustomId(`panel_reset_${scriptId}`).setLabel('Reset HWID').setStyle(ButtonStyle.Danger)
+                        new ButtonBuilder()
+                            .setCustomId(`panel_redeem_${scriptId}`)
+                            .setLabel('Redeem Key')
+                            .setEmoji('🔑')
+                            .setStyle(ButtonStyle.Success),
+                        new ButtonBuilder()
+                            .setCustomId(`panel_script_${scriptId}`)
+                            .setLabel('Get Script')
+                            .setEmoji('📜')
+                            .setStyle(ButtonStyle.Primary),
+                        new ButtonBuilder()
+                            .setCustomId(`panel_role_${scriptId}`)
+                            .setLabel('Get Role')
+                            .setEmoji('👤')
+                            .setStyle(ButtonStyle.Primary),
+                        new ButtonBuilder()
+                            .setCustomId(`panel_reset_${scriptId}`)
+                            .setLabel('Reset HWID')
+                            .setEmoji('⚙️')
+                            .setStyle(ButtonStyle.Secondary),
+                        new ButtonBuilder()
+                            .setCustomId(`panel_stats_${scriptId}`)
+                            .setLabel('Get Stats')
+                            .setEmoji('📊')
+                            .setStyle(ButtonStyle.Secondary)
                     );
 
                     await interaction.channel.send({ embeds: [embed], components: [row] });
