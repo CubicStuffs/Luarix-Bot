@@ -1,8 +1,8 @@
 require('dotenv').config();
-const { 
-    Client, GatewayIntentBits, REST, Routes, SlashCommandBuilder, EmbedBuilder, 
-    ActionRowBuilder, StringSelectMenuBuilder, ButtonBuilder, ButtonStyle, 
-    ModalBuilder, TextInputBuilder, TextInputStyle 
+const {
+    Client, GatewayIntentBits, REST, Routes, SlashCommandBuilder, EmbedBuilder,
+    ActionRowBuilder, StringSelectMenuBuilder, ButtonBuilder, ButtonStyle,
+    ModalBuilder, TextInputBuilder, TextInputStyle
 } = require('discord.js');
 const { createClient } = require('@supabase/supabase-js');
 const crypto = require('crypto');
@@ -25,8 +25,9 @@ function genScriptKey() {
 }
 
 function calculateExpiry(daysInput) {
+    if (!daysInput) return undefined;
     if (daysInput.toLowerCase() === 'forever') return null;
-    const days = parseInt(daysInput);
+    const days = parseInt(daysInput, 10);
     if (isNaN(days) || days < 1) return undefined;
     return new Date(Date.now() + days * 86400000).toISOString();
 }
@@ -58,6 +59,15 @@ async function isManager(interaction) {
     return false;
 }
 
+/** Insert rows in chunks (Supabase limits) */
+async function insertInChunks(table, rows, chunkSize = 200) {
+    for (let i = 0; i < rows.length; i += chunkSize) {
+        const slice = rows.slice(i, i + chunkSize);
+        const { error } = await supabase.from(table).insert(slice);
+        if (error) throw error;
+    }
+}
+
 const commands = [
     new SlashCommandBuilder()
         .setName('link')
@@ -83,7 +93,7 @@ const commands = [
 
     new SlashCommandBuilder()
         .setName('whitelist')
-        .setDescription('Whitelist a user')
+        .setDescription('Whitelist a user (also creates a script key)')
         .addUserOption(opt => opt.setName('user').setDescription('User').setRequired(true))
         .addStringOption(opt => opt.setName('project').setDescription('Select project').setRequired(true).setAutocomplete(true))
         .addStringOption(opt => opt.setName('days').setDescription('Days or "forever"').setRequired(true)),
@@ -98,7 +108,7 @@ const commands = [
 
     new SlashCommandBuilder()
         .setName('masswhitelist')
-        .setDescription('Whitelist everyone with a role')
+        .setDescription('Whitelist everyone with a role (also creates script keys)')
         .addRoleOption(opt => opt.setName('role').setDescription('Role to whitelist').setRequired(true))
         .addStringOption(opt => opt.setName('project').setDescription('Select project').setRequired(true).setAutocomplete(true))
         .addStringOption(opt => opt.setName('days').setDescription('Days or "forever"').setRequired(true))
@@ -124,17 +134,17 @@ client.on('interactionCreate', async (interaction) => {
                 const guildId = interaction.guild?.id;
 
                 if (!guildId) {
-                    return interaction.respond([{ name: "❌ Server only command", value: "none" }]);
+                    return interaction.respond([{ name: '❌ Server only command', value: 'none' }]);
                 }
 
                 const link = await getGuildLink(guildId);
                 if (!link) {
-                    return interaction.respond([{ name: "❌ Please /link an API key in this server first", value: "none" }]);
+                    return interaction.respond([{ name: '❌ Please /link an API key in this server first', value: 'none' }]);
                 }
 
                 const manager = await isManager(interaction);
                 if (!manager) {
-                    return interaction.respond([{ name: "❌ You need manager permission", value: "none" }]);
+                    return interaction.respond([{ name: '❌ You need manager permission', value: 'none' }]);
                 }
 
                 const { data: scripts } = await supabase
@@ -143,7 +153,7 @@ client.on('interactionCreate', async (interaction) => {
                     .eq('api_key', link.api_key);
 
                 if (!scripts || scripts.length === 0) {
-                    return interaction.respond([{ name: "❌ No projects found for this server", value: "none" }]);
+                    return interaction.respond([{ name: '❌ No projects found for this server', value: 'none' }]);
                 }
 
                 const filtered = scripts
@@ -151,7 +161,7 @@ client.on('interactionCreate', async (interaction) => {
                     .map(c => ({ name: c.name, value: c.id }))
                     .slice(0, 25);
 
-                await interaction.respond(filtered.length > 0 ? filtered : [{ name: "No matching projects", value: "none" }]);
+                await interaction.respond(filtered.length > 0 ? filtered : [{ name: 'No matching projects', value: 'none' }]);
             }
             return;
         }
@@ -166,12 +176,12 @@ client.on('interactionCreate', async (interaction) => {
                 const guildId = interaction.guild?.id;
 
                 if (!guildId) {
-                    return interaction.reply({ content: "❌ This command can only be used in a server.", ephemeral: true });
+                    return interaction.reply({ content: '❌ This command can only be used in a server.', ephemeral: true });
                 }
 
                 const { data: users } = await supabase.from('users').select('*').eq('api_key', apiKey).limit(1);
                 if (!users || users.length === 0) {
-                    return interaction.reply({ content: "❌ Invalid API Key. Make sure it exists on the Luarix dashboard.", ephemeral: true });
+                    return interaction.reply({ content: '❌ Invalid API Key. Make sure it exists on the Luarix dashboard.', ephemeral: true });
                 }
 
                 const { data: existing } = await supabase
@@ -199,7 +209,7 @@ client.on('interactionCreate', async (interaction) => {
                 }
 
                 return interaction.reply({
-                    content: `✅ Successfully linked API Key \`${apiKey}\` to **this server**.\nManager role: ${roleId ? `<@&${roleId}>` : "None"}`,
+                    content: `✅ Successfully linked API Key \`${apiKey}\` to **this server**.\nManager role: ${roleId ? `<@&${roleId}>` : 'None'}`,
                     ephemeral: true
                 });
             }
@@ -208,39 +218,38 @@ client.on('interactionCreate', async (interaction) => {
             if (interaction.commandName === 'unlink') {
                 const guildId = interaction.guild?.id;
                 if (!guildId) {
-                    return interaction.reply({ content: "❌ Server only command.", ephemeral: true });
+                    return interaction.reply({ content: '❌ Server only command.', ephemeral: true });
                 }
 
                 const link = await getGuildLink(guildId);
                 if (!link) {
-                    return interaction.reply({ content: "❌ No API key is linked to this server.", ephemeral: true });
+                    return interaction.reply({ content: '❌ No API key is linked to this server.', ephemeral: true });
                 }
 
                 if (link.linked_by !== interaction.user.id) {
-                    return interaction.reply({ content: "❌ Only the person who linked the key can unlink it.", ephemeral: true });
+                    return interaction.reply({ content: '❌ Only the person who linked the key can unlink it.', ephemeral: true });
                 }
 
                 await supabase.from('guild_links').delete().eq('guild_id', guildId);
-                return interaction.reply({ content: "✅ Successfully unlinked the API key from this server.", ephemeral: true });
+                return interaction.reply({ content: '✅ Successfully unlinked the API key from this server.', ephemeral: true });
             }
 
-            // Helper
             async function requireManager() {
                 const guildId = interaction.guild?.id;
                 if (!guildId) {
-                    await interaction.reply({ content: "❌ Server only command.", ephemeral: true });
+                    await interaction.reply({ content: '❌ Server only command.', ephemeral: true });
                     return null;
                 }
 
                 const link = await getGuildLink(guildId);
                 if (!link) {
-                    await interaction.reply({ content: "❌ Please `/link` an API key in this server first.", ephemeral: true });
+                    await interaction.reply({ content: '❌ Please `/link` an API key in this server first.', ephemeral: true });
                     return null;
                 }
 
                 const manager = await isManager(interaction);
                 if (!manager) {
-                    await interaction.reply({ content: "❌ You need the manager role (or be the linker) to use this command.", ephemeral: true });
+                    await interaction.reply({ content: '❌ You need the manager role (or be the linker) to use this command.', ephemeral: true });
                     return null;
                 }
 
@@ -255,7 +264,7 @@ client.on('interactionCreate', async (interaction) => {
                 const days = interaction.options.getString('days');
                 const expiresAt = calculateExpiry(days);
                 if (expiresAt === undefined) {
-                    return interaction.reply({ content: "❌ Invalid days value. Use a number or `forever`.", ephemeral: true });
+                    return interaction.reply({ content: '❌ Invalid days value. Use a number or `forever`.', ephemeral: true });
                 }
 
                 const { data: scripts } = await supabase
@@ -285,12 +294,12 @@ client.on('interactionCreate', async (interaction) => {
 
                 const link = await getGuildLink(interaction.guild?.id);
                 if (!link) {
-                    return interaction.editReply({ content: "❌ Please `/link` an API key in this server first." });
+                    return interaction.editReply({ content: '❌ Please `/link` an API key in this server first.' });
                 }
 
                 const manager = await isManager(interaction);
                 if (!manager) {
-                    return interaction.editReply({ content: "❌ You need manager permission." });
+                    return interaction.editReply({ content: '❌ You need manager permission.' });
                 }
 
                 try {
@@ -298,8 +307,8 @@ client.on('interactionCreate', async (interaction) => {
                     const buyerRole = interaction.options.getRole('buyer_role');
                     const managerRole = interaction.options.getRole('manager_role');
 
-                    if (scriptId === "none" || !buyerRole) {
-                        return interaction.editReply({ content: "❌ Please select a valid project and buyer role." });
+                    if (scriptId === 'none' || !buyerRole) {
+                        return interaction.editReply({ content: '❌ Please select a valid project and buyer role.' });
                     }
 
                     if (managerRole) {
@@ -326,7 +335,7 @@ client.on('interactionCreate', async (interaction) => {
                         .eq('id', scriptId)
                         .single();
 
-                    if (!script) throw new Error("Script not found.");
+                    if (!script) throw new Error('Script not found.');
 
                     const embed = new EmbedBuilder()
                         .setTitle(`${script.name} Control Panel`)
@@ -334,7 +343,6 @@ client.on('interactionCreate', async (interaction) => {
                         .setColor(0xf5c518)
                         .setFooter({ text: `Sent by ${interaction.user.username}` });
 
-                    // Nice looking buttons with emojis (like old version)
                     const row = new ActionRowBuilder().addComponents(
                         new ButtonBuilder()
                             .setCustomId(`panel_redeem_${scriptId}`)
@@ -364,22 +372,22 @@ client.on('interactionCreate', async (interaction) => {
                     );
 
                     await interaction.channel.send({ embeds: [embed], components: [row] });
-                    return interaction.editReply({ content: "✅ Panel successfully created!" });
+                    return interaction.editReply({ content: '✅ Panel successfully created!' });
                 } catch (err) {
-                    console.error("Setpanel Error:", err);
-                    return interaction.editReply({ content: `❌ Error creating panel: ${err.message || "Unknown error"}` });
+                    console.error('Setpanel Error:', err);
+                    return interaction.editReply({ content: `❌ Error creating panel: ${err.message || 'Unknown error'}` });
                 }
             }
 
-            // /whitelist
+            // /whitelist — also creates script_key so loader works immediately
             if (interaction.commandName === 'whitelist') {
                 await interaction.deferReply({ ephemeral: true });
 
                 const link = await getGuildLink(interaction.guild?.id);
-                if (!link) return interaction.editReply({ content: "❌ Please `/link` an API key first." });
+                if (!link) return interaction.editReply({ content: '❌ Please `/link` an API key first.' });
 
                 const manager = await isManager(interaction);
-                if (!manager) return interaction.editReply({ content: "❌ You need manager permission." });
+                if (!manager) return interaction.editReply({ content: '❌ You need manager permission.' });
 
                 try {
                     const targetUser = interaction.options.getUser('user');
@@ -387,8 +395,8 @@ client.on('interactionCreate', async (interaction) => {
                     const days = interaction.options.getString('days');
                     const expiresAt = calculateExpiry(days);
 
-                    if (scriptId === "none" || expiresAt === undefined) {
-                        return interaction.editReply({ content: "❌ Invalid project or days." });
+                    if (scriptId === 'none' || expiresAt === undefined) {
+                        return interaction.editReply({ content: '❌ Invalid project or days.' });
                     }
 
                     const { data: scriptCheck } = await supabase
@@ -399,7 +407,7 @@ client.on('interactionCreate', async (interaction) => {
                         .single();
 
                     if (!scriptCheck) {
-                        return interaction.editReply({ content: "❌ This project does not belong to this server." });
+                        return interaction.editReply({ content: '❌ This project does not belong to this server.' });
                     }
 
                     const { data: scriptData } = await supabase
@@ -408,16 +416,47 @@ client.on('interactionCreate', async (interaction) => {
                         .eq('id', scriptId)
                         .single();
 
-                    const panelChannel = scriptData?.panel_channel_id ? `<#${scriptData.panel_channel_id}>` : "the panel channel";
+                    const panelChannel = scriptData?.panel_channel_id ? `<#${scriptData.panel_channel_id}>` : 'the panel channel';
 
-                    await supabase.from('whitelists').insert({
+                    // Upsert-style: try insert whitelist (ignore duplicate errors)
+                    const { error: wlErr } = await supabase.from('whitelists').insert({
                         discord_id: targetUser.id,
                         script_id: scriptId,
                         expires_at: expiresAt
                     });
+                    if (wlErr && !String(wlErr.message || '').toLowerCase().includes('duplicate')) {
+                        // continue even on duplicate whitelist
+                        console.warn('whitelist insert:', wlErr.message);
+                    }
 
-                    await interaction.channel.send(`<@${targetUser.id}> You have been whitelisted!\nYou can access the script via this message --> ${panelChannel}`);
-                    return interaction.editReply({ content: "✅ User whitelisted successfully." });
+                    // Ensure they have a script_key for the loader
+                    const { data: existingKeys } = await supabase
+                        .from('script_keys')
+                        .select('key')
+                        .eq('script_id', scriptId)
+                        .eq('discord_id', targetUser.id)
+                        .limit(1);
+
+                    let userKey = existingKeys && existingKeys[0] ? existingKeys[0].key : null;
+                    if (!userKey) {
+                        userKey = genScriptKey();
+                        const { error: keyErr } = await supabase.from('script_keys').insert({
+                            key: userKey,
+                            script_id: scriptId,
+                            discord_id: targetUser.id,
+                            expires_at: expiresAt
+                        });
+                        if (keyErr) throw keyErr;
+                    }
+
+                    await interaction.channel.send(
+                        `<@${targetUser.id}> You have been whitelisted!\n` +
+                        `Go to ${panelChannel} and click **Get Script** to receive your loader.\n` +
+                        `Or use this key: \`${userKey}\``
+                    );
+                    return interaction.editReply({
+                        content: `✅ User whitelisted.\nKey: \`${userKey}\`\nThey must use this key (or Get Script from panel).`
+                    });
                 } catch (e) {
                     return interaction.editReply({ content: `❌ Error: ${e.message}` });
                 }
@@ -428,10 +467,10 @@ client.on('interactionCreate', async (interaction) => {
                 await interaction.deferReply({ ephemeral: true });
 
                 const link = await getGuildLink(interaction.guild?.id);
-                if (!link) return interaction.editReply({ content: "❌ Please `/link` an API key first." });
+                if (!link) return interaction.editReply({ content: '❌ Please `/link` an API key first.' });
 
                 const manager = await isManager(interaction);
-                if (!manager) return interaction.editReply({ content: "❌ You need manager permission." });
+                if (!manager) return interaction.editReply({ content: '❌ You need manager permission.' });
 
                 try {
                     const targetUser = interaction.options.getUser('user');
@@ -440,8 +479,8 @@ client.on('interactionCreate', async (interaction) => {
                     const days = interaction.options.getString('days');
                     const expiresAt = calculateExpiry(days);
 
-                    if (scriptId === "none" || expiresAt === undefined) {
-                        return interaction.editReply({ content: "❌ Invalid project or days." });
+                    if (scriptId === 'none' || expiresAt === undefined) {
+                        return interaction.editReply({ content: '❌ Invalid project or days.' });
                     }
 
                     const { data: scriptCheck } = await supabase
@@ -452,7 +491,7 @@ client.on('interactionCreate', async (interaction) => {
                         .single();
 
                     if (!scriptCheck) {
-                        return interaction.editReply({ content: "❌ This project does not belong to this server." });
+                        return interaction.editReply({ content: '❌ This project does not belong to this server.' });
                     }
 
                     const { data: scriptData } = await supabase
@@ -461,7 +500,7 @@ client.on('interactionCreate', async (interaction) => {
                         .eq('id', scriptId)
                         .single();
 
-                    const panelChannel = scriptData?.panel_channel_id ? `<#${scriptData.panel_channel_id}>` : "the panel channel";
+                    const panelChannel = scriptData?.panel_channel_id ? `<#${scriptData.panel_channel_id}>` : 'the panel channel';
 
                     await supabase.from('blacklists').insert({
                         discord_id: targetUser.id,
@@ -470,23 +509,25 @@ client.on('interactionCreate', async (interaction) => {
                         expires_at: expiresAt
                     });
 
-                    await interaction.channel.send(`<@${targetUser.id}> You have been blacklisted! ⛔\nTo find out why, go to ${panelChannel} and click on **Stats** button`);
-                    return interaction.editReply({ content: "✅ User blacklisted successfully." });
+                    await interaction.channel.send(
+                        `<@${targetUser.id}> You have been blacklisted! ⛔\nTo find out why, go to ${panelChannel} and click on **Stats** button`
+                    );
+                    return interaction.editReply({ content: '✅ User blacklisted successfully.' });
                 } catch (e) {
                     return interaction.editReply({ content: `❌ Error: ${e.message}` });
                 }
             }
 
-            // /masswhitelist
+            // /masswhitelist — whitelist + create script_keys for each member
             if (interaction.commandName === 'masswhitelist') {
                 const link = await getGuildLink(interaction.guild?.id);
                 if (!link) {
-                    return interaction.reply({ content: "❌ Please `/link` an API key first.", ephemeral: true });
+                    return interaction.reply({ content: '❌ Please `/link` an API key first.', ephemeral: true });
                 }
 
                 const manager = await isManager(interaction);
                 if (!manager) {
-                    return interaction.reply({ content: "❌ You need manager permission.", ephemeral: true });
+                    return interaction.reply({ content: '❌ You need manager permission.', ephemeral: true });
                 }
 
                 const targetRole = interaction.options.getRole('role');
@@ -494,12 +535,12 @@ client.on('interactionCreate', async (interaction) => {
                 const days = interaction.options.getString('days');
                 const expiresAt = calculateExpiry(days);
 
-                if (scriptId === "none" || expiresAt === undefined) {
-                    return interaction.reply({ content: "❌ Invalid project or days.", ephemeral: true });
+                if (scriptId === 'none' || expiresAt === undefined) {
+                    return interaction.reply({ content: '❌ Invalid project or days.', ephemeral: true });
                 }
 
                 if (targetRole.id === interaction.guild.id) {
-                    return interaction.reply({ content: "❌ Cannot whitelist @everyone.", ephemeral: true });
+                    return interaction.reply({ content: '❌ Cannot whitelist @everyone.', ephemeral: true });
                 }
 
                 const { data: scriptCheck } = await supabase
@@ -510,28 +551,70 @@ client.on('interactionCreate', async (interaction) => {
                     .single();
 
                 if (!scriptCheck) {
-                    return interaction.reply({ content: "❌ This project does not belong to this server.", ephemeral: true });
+                    return interaction.reply({ content: '❌ This project does not belong to this server.', ephemeral: true });
                 }
 
                 await interaction.deferReply({ ephemeral: true });
 
                 try {
                     const allMembers = await interaction.guild.members.fetch();
-                    const membersWithRole = allMembers.filter(member => member.roles.cache.has(targetRole.id));
+                    const membersWithRole = allMembers.filter(member => member.roles.cache.has(targetRole.id) && !member.user.bot);
 
                     if (membersWithRole.size === 0) {
                         return interaction.editReply({ content: `❌ No members found with the role **${targetRole.name}**.` });
                     }
 
-                    const whitelistData = membersWithRole.map(member => ({
-                        discord_id: member.id,
-                        script_id: scriptId,
-                        expires_at: expiresAt
-                    }));
+                    const whitelistData = [];
+                    const keyData = [];
 
-                    await supabase.from('whitelists').insert(whitelistData);
-                    return interaction.editReply({ content: `✅ Successfully whitelisted **${membersWithRole.size}** members.` });
+                    for (const member of membersWithRole.values()) {
+                        whitelistData.push({
+                            discord_id: member.id,
+                            script_id: scriptId,
+                            expires_at: expiresAt
+                        });
+                        keyData.push({
+                            key: genScriptKey(),
+                            script_id: scriptId,
+                            discord_id: member.id,
+                            expires_at: expiresAt
+                        });
+                    }
+
+                    // Whitelists (duplicates may fail — try/catch per chunk soft)
+                    try {
+                        await insertInChunks('whitelists', whitelistData);
+                    } catch (e) {
+                        console.warn('mass whitelist partial:', e.message);
+                        // Fallback: insert one-by-one ignoring duplicates
+                        for (const row of whitelistData) {
+                            await supabase.from('whitelists').insert(row).then(() => {}).catch(() => {});
+                        }
+                    }
+
+                    // Only create keys for users who don't already have one for this script
+                    const { data: existingKeys } = await supabase
+                        .from('script_keys')
+                        .select('discord_id')
+                        .eq('script_id', scriptId);
+
+                    const haveKey = new Set((existingKeys || []).map(k => k.discord_id).filter(Boolean));
+                    const newKeys = keyData.filter(k => !haveKey.has(k.discord_id));
+
+                    if (newKeys.length > 0) {
+                        await insertInChunks('script_keys', newKeys);
+                    }
+
+                    return interaction.editReply({
+                        content:
+                            `✅ Mass whitelist done for **${membersWithRole.size}** members.\n` +
+                            `• Whitelist rows: ${whitelistData.length}\n` +
+                            `• New keys created: **${newKeys.length}**\n\n` +
+                            `Users must open the panel → **Get Script** to copy their personal loader.\n` +
+                            `Using a wrong / shared key still gives **Invalid script_key**.`
+                    });
                 } catch (e) {
+                    console.error('masswhitelist error:', e);
                     return interaction.editReply({ content: `❌ Error: ${e.message}` });
                 }
             }
@@ -579,14 +662,13 @@ client.on('interactionCreate', async (interaction) => {
                 const action = parts[1];
                 const scriptId = parts[2];
 
-                // Redeem → Modal
                 if (action === 'redeem') {
                     const modal = new ModalBuilder()
                         .setCustomId(`modal_redeem_${scriptId}`)
                         .setTitle('Redeem a key');
                     const keyInput = new TextInputBuilder()
                         .setCustomId('key_input')
-                        .setLabel("Enter script key below:")
+                        .setLabel('Enter script key below:')
                         .setPlaceholder('Paste your 32-character key')
                         .setStyle(TextInputStyle.Short)
                         .setRequired(true);
@@ -596,7 +678,6 @@ client.on('interactionCreate', async (interaction) => {
 
                 await interaction.deferReply({ ephemeral: true });
 
-                // Blacklist check
                 const { data: blacklists } = await supabase.from('blacklists')
                     .select('*')
                     .eq('discord_id', interaction.user.id)
@@ -605,25 +686,24 @@ client.on('interactionCreate', async (interaction) => {
 
                 if (activeBlacklist) {
                     const banMsg = `You are blacklisted from this project with the reason:\n\`\`\`\n${activeBlacklist.reason}\n\`\`\`\n⚠️ This ban will expire **${activeBlacklist.expires_at ? new Date(activeBlacklist.expires_at).toLocaleDateString() : 'Never'}**`;
-                    
+
                     if (action === 'script') {
-                        return interaction.editReply({ 
-                            embeds: [new EmbedBuilder().setTitle('Unable to send script').setColor(0xef4444).setDescription(banMsg)] 
+                        return interaction.editReply({
+                            embeds: [new EmbedBuilder().setTitle('Unable to send script').setColor(0xef4444).setDescription(banMsg)]
                         });
                     }
                     if (action === 'role') {
-                        return interaction.editReply({ 
-                            embeds: [new EmbedBuilder().setTitle('Unable to give role').setColor(0xef4444).setDescription(banMsg)] 
+                        return interaction.editReply({
+                            embeds: [new EmbedBuilder().setTitle('Unable to give role').setColor(0xef4444).setDescription(banMsg)]
                         });
                     }
                     if (action === 'reset') {
-                        return interaction.editReply({ 
-                            embeds: [new EmbedBuilder().setTitle('Unable to reset HWID!').setColor(0xef4444).setDescription('User is temporarily blacklisted.')] 
+                        return interaction.editReply({
+                            embeds: [new EmbedBuilder().setTitle('Unable to reset HWID!').setColor(0xef4444).setDescription('User is temporarily blacklisted.')]
                         });
                     }
                 }
 
-                // Key + whitelist check
                 const { data: userKeys } = await supabase.from('script_keys')
                     .select('*')
                     .eq('script_id', scriptId)
@@ -642,29 +722,27 @@ client.on('interactionCreate', async (interaction) => {
                     .eq('id', scriptId)
                     .single();
 
-                // ========== GET SCRIPT (FIXED) ==========
+                // ========== GET SCRIPT ==========
                 if (action === 'script') {
                     if (!userKey && !isWhitelisted) {
-                        return interaction.editReply({ 
+                        return interaction.editReply({
                             embeds: [new EmbedBuilder()
                                 .setTitle('Not whitelisted!')
                                 .setColor(0xef4444)
-                                .setDescription('You need to be whitelisted to get this script.\nIf you have a script key, click on the **Redeem** button to redeem it.')
-                            ] 
+                                .setDescription('You need to be whitelisted to get this script.\nIf you have a script key, click **Redeem Key**.')
+                            ]
                         });
                     }
 
                     let finalKey = userKey ? userKey.key : null;
 
-                    // If user is whitelisted but has no key → create one automatically
                     if (!finalKey && isWhitelisted) {
                         finalKey = genScriptKey();
-
                         await supabase.from('script_keys').insert({
                             key: finalKey,
                             script_id: scriptId,
                             discord_id: interaction.user.id,
-                            expires_at: null // forever
+                            expires_at: null
                         });
                     }
 
@@ -676,7 +754,7 @@ client.on('interactionCreate', async (interaction) => {
                         embeds: [new EmbedBuilder()
                             .setTitle(`${script?.name || 'Script'} Loader`)
                             .setColor(0xf5c518)
-                            .setDescription('```lua\n' + loader + '\n```')
+                            .setDescription('```lua\n' + loader + '\n```\n**Use this exact key** — shared/wrong keys cause Invalid script_key.')
                         ]
                     });
                 }
@@ -684,11 +762,11 @@ client.on('interactionCreate', async (interaction) => {
                 // ========== GET ROLE ==========
                 if (action === 'role') {
                     if (!userKey && !isWhitelisted) {
-                        return interaction.editReply({ content: "You need to redeem a key or be whitelisted first!" });
+                        return interaction.editReply({ content: 'You need to redeem a key or be whitelisted first!' });
                     }
 
                     if (!script?.buyer_role_id) {
-                        return interaction.editReply({ content: "❌ No buyer role is set for this project." });
+                        return interaction.editReply({ content: '❌ No buyer role is set for this project.' });
                     }
 
                     try {
@@ -698,14 +776,14 @@ client.on('interactionCreate', async (interaction) => {
                         }
                         const role = interaction.guild.roles.cache.get(script.buyer_role_id);
                         if (!role) {
-                            return interaction.editReply({ content: "❌ Buyer role not found in this server." });
+                            return interaction.editReply({ content: '❌ Buyer role not found in this server.' });
                         }
                         await member.roles.add(role.id);
                         return interaction.editReply({ content: `✅ Role **${role.name}** given successfully!` });
                     } catch (err) {
-                        console.error("Give role error:", err);
+                        console.error('Give role error:', err);
                         return interaction.editReply({
-                            content: `❌ Failed to give role: ${err.message || "Unknown error"}\nMake sure the bot has **Manage Roles** permission and its role is above the buyer role.`
+                            content: `❌ Failed to give role: ${err.message || 'Unknown error'}\nMake sure the bot has **Manage Roles** and its role is above the buyer role.`
                         });
                     }
                 }
@@ -713,9 +791,9 @@ client.on('interactionCreate', async (interaction) => {
                 // ========== RESET HWID ==========
                 if (action === 'reset') {
                     if (!userKey && !isWhitelisted) {
-                        return interaction.editReply({ content: "You need to redeem a key first!" });
+                        return interaction.editReply({ content: 'You need to redeem a key first!' });
                     }
-                    
+
                     let keyToReset = userKey ? userKey.key : null;
                     if (!keyToReset && isWhitelisted) {
                         const { data: vipKey } = await supabase.from('script_keys')
@@ -727,19 +805,19 @@ client.on('interactionCreate', async (interaction) => {
                     }
 
                     if (keyToReset) {
-                        await supabase.from('script_keys').update({ 
-                            hwid: null, 
-                            resets: (userKey?.resets || 0) + 1, 
-                            last_reset: new Date().toISOString() 
+                        await supabase.from('script_keys').update({
+                            hwid: null,
+                            resets: (userKey?.resets || 0) + 1,
+                            last_reset: new Date().toISOString()
                         }).eq('key', keyToReset);
                     }
-                    return interaction.editReply({ content: "✅ Your HWID has been successfully reset!" });
+                    return interaction.editReply({ content: '✅ Your HWID has been successfully reset!' });
                 }
 
                 // ========== GET STATS ==========
                 if (action === 'stats') {
                     if (!userKey && !isWhitelisted) {
-                        return interaction.editReply({ content: "You need to redeem a key first!" });
+                        return interaction.editReply({ content: 'You need to redeem a key first!' });
                     }
 
                     let statsKey = userKey;
@@ -779,19 +857,19 @@ client.on('interactionCreate', async (interaction) => {
                     .eq('key', inputKey)
                     .eq('script_id', scriptId)
                     .limit(1);
-                    
+
                 if (!keyData || keyData.length === 0) {
-                    return interaction.reply({ content: "❌ Invalid key for this project.", ephemeral: true });
+                    return interaction.reply({ content: '❌ Invalid key for this project.', ephemeral: true });
                 }
 
                 const key = keyData[0];
                 if (key.discord_id && key.discord_id !== interaction.user.id) {
-                    return interaction.reply({ content: "❌ This key has already been redeemed.", ephemeral: true });
+                    return interaction.reply({ content: '❌ This key has already been redeemed.', ephemeral: true });
                 }
 
                 await supabase.from('script_keys').update({ discord_id: interaction.user.id }).eq('key', inputKey);
-                
-                let roleMsg = "";
+
+                let roleMsg = '';
                 try {
                     const { data: script } = await supabase.from('scripts').select('buyer_role_id').eq('id', scriptId).single();
                     if (script && script.buyer_role_id) {
@@ -800,26 +878,26 @@ client.on('interactionCreate', async (interaction) => {
                             member = await interaction.guild.members.fetch(interaction.user.id);
                         }
                         await member.roles.add(script.buyer_role_id);
-                        roleMsg = " Buyer role has also been given.";
+                        roleMsg = ' Buyer role has also been given.';
                     }
                 } catch (err) {
-                    console.error("Auto role on redeem failed:", err.message);
-                    roleMsg = " (Could not auto-give role — use Get Role button or check bot permissions.)";
+                    console.error('Auto role on redeem failed:', err.message);
+                    roleMsg = ' (Could not auto-give role — use Get Role button or check bot permissions.)';
                 }
 
-                return interaction.reply({ 
-                    content: "✅ Successfully redeemed key! You now have access to the script." + roleMsg, 
-                    ephemeral: true 
+                return interaction.reply({
+                    content: '✅ Successfully redeemed key! You now have access to the script.' + roleMsg,
+                    ephemeral: true
                 });
             }
         }
 
     } catch (err) {
-        console.error("Interaction Error:", err);
+        console.error('Interaction Error:', err);
         if (interaction.replied || interaction.deferred) {
-            await interaction.followUp({ content: "❌ An error occurred.", ephemeral: true }).catch(() => {});
+            await interaction.followUp({ content: '❌ An error occurred.', ephemeral: true }).catch(() => {});
         } else {
-            await interaction.reply({ content: "❌ An error occurred.", ephemeral: true }).catch(() => {});
+            await interaction.reply({ content: '❌ An error occurred.', ephemeral: true }).catch(() => {});
         }
     }
 });
